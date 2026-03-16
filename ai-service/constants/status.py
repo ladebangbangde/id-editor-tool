@@ -1,0 +1,15 @@
+QUALITY_STATUS_PASSED = "passed"
+QUALITY_STATUS_WARNING = "warning"
+QUALITY_STATUS_FAILED = "failed"
+
+ALLOWED_QUALITY_STATUS = {
+    QUALITY_STATUS_PASSED,
+    QUALITY_STATUS_WARNING,
+    QUALITY_STATUS_FAILED,
+}
+
+LAYOUT_TYPES = {
+    "six": 6,
+    "eight": 8,
+    "twelve": 12,
+}
