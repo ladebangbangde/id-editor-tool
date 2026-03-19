@@ -6,8 +6,6 @@ from core.exceptions import (
     ERROR_FILE_NOT_FOUND,
     ERROR_IMAGE_TOO_SMALL,
     ERROR_INVALID_ARGUMENT,
-    ERROR_MULTIPLE_FACES_DETECTED,
-    ERROR_NO_FACE_DETECTED,
 )
 from pipeline.build_preview import PreviewBuilder
 from services.background_service import BackgroundService
@@ -17,6 +15,7 @@ from services.enhance_service import EnhanceService
 from services.print_service import PrintService
 from services.quality_service import QualityService
 from services.segment_service import SegmentService
+from services.validation_service import ValidationService
 from utils.config import get_settings
 from utils.file_utils import build_output_path, to_url_like_path
 from utils.image_utils import save_pil_image
@@ -33,6 +32,7 @@ class GenerateIdPhotoPipeline:
         self.quality_service = QualityService()
         self.print_service = PrintService()
         self.preview_builder = PreviewBuilder()
+        self.validation_service = ValidationService()
 
     def _resolve_template(self, source_type: str, scene_key: str | None, custom_w: int | None, custom_h: int | None):
         if source_type == 'scene':
@@ -49,10 +49,9 @@ class GenerateIdPhotoPipeline:
             raise AppException(f'original image not found: {original_image_path}', ERROR_FILE_NOT_FOUND, 404)
 
         detect_result = self.detect_service.detect(image_id=image_id, image_path=original_image_path)
-        if not detect_result.hasFace:
-            raise AppException('No face detected from source image', ERROR_NO_FACE_DETECTED, 400)
-        if detect_result.faceCount > 1:
-            raise AppException('Multiple faces detected from source image', ERROR_MULTIPLE_FACES_DETECTED, 400)
+        if not detect_result.passed:
+            error_code, message = self.validation_service.build_generate_error(detect_result.reasons)
+            raise AppException(message, error_code, 400, data=detect_result.to_dict())
 
         size_tpl = self._resolve_template(
             source_type=payload['sourceType'],

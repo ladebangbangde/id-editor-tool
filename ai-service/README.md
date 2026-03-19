@@ -260,6 +260,11 @@ docker run --rm \
 - `INVALID_IMAGE`
 - `NO_FACE_DETECTED`
 - `MULTIPLE_FACES_DETECTED`
+- `IMAGE_TOO_BLURRY`
+- `FACE_TOO_SMALL`
+- `POSE_INVALID`
+- `FACE_OCCLUDED`
+- `HEAD_CROPPED`
 - `IMAGE_TOO_SMALL`
 - `FILE_NOT_FOUND`
 - `INVALID_ARGUMENT`
@@ -288,6 +293,47 @@ curl -X POST 'http://127.0.0.1:8000/ai/detect' \
   }'
 ```
 
+成功返回中的 `data` 会明确区分“检测到人脸”和“是否通过证件照准入校验”：
+
+```json
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "imageId": "img_001",
+    "hasFace": true,
+    "faceCount": 1,
+    "pass": true,
+    "reasons": [],
+    "message": "照片符合证件照制作要求",
+    "primaryFaceBox": {
+      "x": 120,
+      "y": 80,
+      "width": 260,
+      "height": 260
+    }
+  }
+}
+```
+
+多人图示例：
+
+```json
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "imageId": "img_multi",
+    "hasFace": true,
+    "faceCount": 2,
+    "pass": false,
+    "reasons": ["MULTIPLE_FACES_DETECTED"],
+    "message": "检测到多张人脸，不符合证件照制作要求",
+    "primaryFaceBox": null
+  }
+}
+```
+
 ### 10.3 `POST /ai/generate-id-photo`
 
 ```bash
@@ -303,6 +349,8 @@ curl -X POST 'http://127.0.0.1:8000/ai/generate-id-photo' \
     "originalImagePath": "uploads/original/img_001.jpg"
   }'
 ```
+
+> 生成前会先执行和 `/ai/detect` 完全一致的准入校验。如果 `pass=false`，接口会直接拒绝继续抠图、换底、裁剪或排版。
 
 ### 10.4 `POST /ai/generate-print-layout`
 
@@ -330,6 +378,8 @@ curl -X POST 'http://127.0.0.1:8000/ai/detect-upload' \
   -F 'imageId=demo_detect'
 ```
 
+`/ai/detect-upload` 与 `/ai/detect` 使用同一套检测与准入规则，返回字段保持一致：`hasFace`、`faceCount`、`pass`、`reasons`、`message`、`primaryFaceBox`。
+
 ### 11.2 `POST /ai/generate-id-photo-upload`
 
 上传一张原图，直接生成证件照。
@@ -345,6 +395,8 @@ curl -X POST 'http://127.0.0.1:8000/ai/generate-id-photo-upload' \
   -F 'printLayoutType=six'
 ```
 
+> 上传生成接口与路径接口同样会先执行准入校验；多人图、无人脸图、模糊图、姿态不合格图不会继续生成。
+
 ### 11.3 `POST /ai/generate-print-layout-upload`
 
 上传一张原图，服务会先生成证件照，再输出排版图。
@@ -359,6 +411,8 @@ curl -X POST 'http://127.0.0.1:8000/ai/generate-print-layout-upload' \
   -F 'backgroundColor=white' \
   -F 'beautyEnabled=false'
 ```
+
+> 排版图上传接口会先走证件照生成链路，因此也会复用同一套准入校验并在不合格时直接拒绝。
 
 ---
 
@@ -418,6 +472,8 @@ python scripts/test_print_upload.py ./tests/demo.jpg --layout-type eight
 
 ## 14. 如何准备测试图片
 
+### 输入图片要求
+
 建议使用：
 
 - 单人正面照
@@ -433,6 +489,18 @@ python scripts/test_print_upload.py ./tests/demo.jpg --layout-type eight
 - 遮挡严重
 - 头像太小
 - 模糊图
+
+### 准入规则说明
+
+- 仅支持**单人正脸照片**。
+- 多人图会返回 `hasFace=true`、`faceCount>1`，但 `pass=false`，并给出 `MULTIPLE_FACES_DETECTED`。
+- 无人脸图会返回 `hasFace=false`、`pass=false`，并给出 `NO_FACE_DETECTED`。
+- 模糊图可能返回 `IMAGE_TOO_BLURRY`。
+- 人脸过小可能返回 `FACE_TOO_SMALL`。
+- 侧脸过大、人物偏转明显可能返回 `POSE_INVALID`。
+- 遮挡严重可能返回 `FACE_OCCLUDED`。
+- 头顶、下巴或左右边缘裁切过重可能返回 `HEAD_CROPPED`。
+- `generate-id-photo` / `generate-id-photo-upload` / `generate-print-layout` / `generate-print-layout-upload` 在输入不合格时会**直接拒绝**，不会继续生成错误结果。
 
 > 当前裁剪逻辑已经增强：优先参考检测到的人脸框，尽量保留头顶留白、让脸部占比更接近常见证件照；如果没有检测框，会自动回退到原有中心裁剪策略。
 
@@ -454,13 +522,33 @@ python scripts/test_print_upload.py ./tests/demo.jpg --layout-type eight
 
 ### 4) `MULTIPLE_FACES_DETECTED`
 
-说明图里检测到了多张脸。建议换成单人图。
+说明图里检测到了多张脸，不符合证件照制作要求。生成接口会直接拒绝继续处理。
 
-### 5) `IMAGE_TOO_SMALL`
+### 5) `IMAGE_TOO_BLURRY`
+
+说明图片过于模糊，无法满足证件照输入要求。建议上传更清晰原图。
+
+### 6) `FACE_TOO_SMALL`
+
+说明人脸在整张图中占比过小，后续裁剪难以保证证件照质量。建议上传人像主体更明显的照片。
+
+### 7) `POSE_INVALID`
+
+说明姿态偏转过大或不符合正脸要求。建议上传单人正脸照片。
+
+### 8) `FACE_OCCLUDED`
+
+说明人脸存在严重遮挡。建议去掉口罩、手部、头发等遮挡后重试。
+
+### 9) `HEAD_CROPPED`
+
+说明头部被裁切过多。建议上传头部完整、四周留白更合理的照片。
+
+### 10) `IMAGE_TOO_SMALL`
 
 说明输出分辨率过低，建议上传更高分辨率原图。
 
-### 6) `PROCESS_FAILED`
+### 11) `PROCESS_FAILED`
 
 通常是抠图、图像处理、依赖环境或系统库问题。优先检查：
 

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ApiResponse(BaseModel):
@@ -14,6 +14,8 @@ class DetectResult(BaseModel):
     imageId: str
     hasFace: bool
     faceCount: int
+    pass_: bool = Field(alias='pass')
+    reasons: list[str]
     blurScore: float
     poseValid: bool
     occlusionDetected: bool
