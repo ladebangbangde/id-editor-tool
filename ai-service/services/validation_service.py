@@ -22,6 +22,9 @@ class ValidationOutcome:
     passed: bool
     reasons: list[str] = field(default_factory=list)
     message: str = '未检测到有效人脸'
+    blurScore: float | None = None
+    imageWidth: int = 0
+    imageHeight: int = 0
     primaryFaceBox: dict | None = None
     rawFaceCount: int = 0
     filteredOutReasons: list[dict] = field(default_factory=list)
@@ -33,6 +36,9 @@ class ValidationOutcome:
             'pass': self.passed,
             'reasons': self.reasons,
             'message': self.message,
+            'blurScore': self.blurScore,
+            'imageWidth': self.imageWidth,
+            'imageHeight': self.imageHeight,
             'primaryFaceBox': self.primaryFaceBox,
         }
 
@@ -74,7 +80,7 @@ class ValidationService:
 
     def _build_message(self, reasons: list[str], passed: bool, for_generate: bool = False) -> str:
         if passed:
-            return '照片符合证件照制作要求'
+            return '图片符合证件照制作要求'
         if not reasons:
             return '图片不符合证件照制作要求'
         mapping = self.generate_messages if for_generate else self.detect_messages
@@ -112,6 +118,9 @@ class ValidationService:
             passed=passed,
             reasons=ordered_reasons,
             message=message,
+            blurScore=blur_score,
+            imageWidth=image_shape[1],
+            imageHeight=image_shape[0],
             primaryFaceBox=primary_face_box,
             rawFaceCount=postprocess_result.rawFaceCount,
             filteredOutReasons=postprocess_result.filteredOutReasons,

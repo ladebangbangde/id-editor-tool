@@ -25,7 +25,10 @@ class QualityService:
     def is_image_too_blurry(self, blur_score: float | None) -> bool:
         if blur_score is None:
             return False
-        return blur_score < self.settings.blur_threshold
+        threshold = self.settings.blur_threshold
+        if blur_score <= 1 and threshold > 1:
+            threshold = round(threshold / 100, 2)
+        return blur_score < threshold
 
     def is_face_too_small(self, image_shape: tuple[int, ...], face_box: dict) -> bool:
         image_height, image_width = image_shape[:2]
