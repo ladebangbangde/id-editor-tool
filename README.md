@@ -419,6 +419,9 @@ SAVE_INTERMEDIATE=true
 
 ### 2. 返回 `MULTIPLE_FACES_DETECTED`
 
+- 系统会先对候选人脸框做过滤、去重与主脸优先选择，再统计有效独立人脸数量
+- 只有过滤后仍存在 2 张及以上有效独立人脸时，才会返回 `MULTIPLE_FACES_DETECTED`
+- 如是单人图，建议仍尽量避免帽檐、头发遮挡、耳机、强阴影或复杂高对比背景
 - 请裁掉其他人，只保留单人照片
 
 ### 3. 返回 `IMAGE_TOO_SMALL`

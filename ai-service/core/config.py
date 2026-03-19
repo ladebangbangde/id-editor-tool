@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     hd_quality: int = Field(default=95, validation_alias=AliasChoices('HD_QUALITY'))
     jpeg_dpi: int = Field(default=300, validation_alias=AliasChoices('JPEG_DPI'))
 
+    min_valid_face_width: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_WIDTH'))
+    min_valid_face_height: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_HEIGHT'))
+    multi_face_min_area_ratio: float = Field(default=0.25, validation_alias=AliasChoices('MULTI_FACE_MIN_AREA_RATIO'))
+    face_box_iou_threshold: float = Field(default=0.35, validation_alias=AliasChoices('FACE_BOX_IOU_THRESHOLD'))
+
     static_mount_path: str = '/uploads'
 
     def _resolve_dir(self, directory: str) -> Path:

@@ -120,6 +120,10 @@ SAVE_INTERMEDIATE=true
 PREVIEW_QUALITY=88
 HD_QUALITY=95
 JPEG_DPI=300
+MIN_VALID_FACE_WIDTH=60
+MIN_VALID_FACE_HEIGHT=60
+MULTI_FACE_MIN_AREA_RATIO=0.25
+FACE_BOX_IOU_THRESHOLD=0.35
 ```
 
 ### 配置含义
@@ -136,6 +140,9 @@ JPEG_DPI=300
 - `DEFAULT_BG_COLOR`：上传接口默认底色
 - `DEFAULT_LAYOUT_TYPE`：上传排版接口默认排版类型
 - `SAVE_INTERMEDIATE`：是否保留中间文件（如抠图透明 PNG）
+- `MIN_VALID_FACE_WIDTH` / `MIN_VALID_FACE_HEIGHT`：有效人脸框的最小宽高阈值
+- `MULTI_FACE_MIN_AREA_RATIO`：次级候选框相对主脸面积的最小比例，低于该比例默认忽略
+- `FACE_BOX_IOU_THRESHOLD`：候选框去重时使用的 IoU 阈值
 
 > 兼容说明：服务仍兼容旧变量名 `APP_HOST` / `APP_PORT` / `UPLOAD_BASE_DIR`，方便和现有调用方式共存。
 
@@ -329,7 +336,12 @@ curl -X POST 'http://127.0.0.1:8000/ai/detect' \
     "pass": false,
     "reasons": ["MULTIPLE_FACES_DETECTED"],
     "message": "检测到多张人脸，不符合证件照制作要求",
-    "primaryFaceBox": null
+    "primaryFaceBox": {
+      "x": 120,
+      "y": 80,
+      "width": 220,
+      "height": 220
+    }
   }
 }
 ```
@@ -378,7 +390,7 @@ curl -X POST 'http://127.0.0.1:8000/ai/detect-upload' \
   -F 'imageId=demo_detect'
 ```
 
-`/ai/detect-upload` 与 `/ai/detect` 使用同一套检测与准入规则，返回字段保持一致：`hasFace`、`faceCount`、`pass`、`reasons`、`message`、`primaryFaceBox`。
+`/ai/detect-upload` 与 `/ai/detect` 使用同一套检测与准入规则，返回字段保持一致：`hasFace`、`faceCount`、`pass`、`reasons`、`message`、`primaryFaceBox`。其中 `faceCount` 表示**过滤、去重后的有效独立人脸数量**，不是原始候选框数量。
 
 ### 11.2 `POST /ai/generate-id-photo-upload`
 
@@ -493,7 +505,10 @@ python scripts/test_print_upload.py ./tests/demo.jpg --layout-type eight
 ### 准入规则说明
 
 - 仅支持**单人正脸照片**。
-- 多人图会返回 `hasFace=true`、`faceCount>1`，但 `pass=false`，并给出 `MULTIPLE_FACES_DETECTED`。
+- 系统会先对候选人脸框做**过滤、去重、主脸优先**后处理，再统计有效独立人脸数量。
+- `faceCount` 表示**有效独立人脸数量**，不是检测器直接返回的原始候选框数量。
+- 帽子、头发边缘、阴影、耳机、背景高对比纹理等导致的小误检框，会尽量在后处理阶段被过滤掉。
+- 过滤后若仍有 2 张及以上有效独立人脸，才会返回 `MULTIPLE_FACES_DETECTED`。
 - 无人脸图会返回 `hasFace=false`、`pass=false`，并给出 `NO_FACE_DETECTED`。
 - 模糊图可能返回 `IMAGE_TOO_BLURRY`。
 - 人脸过小可能返回 `FACE_TOO_SMALL`。
@@ -522,7 +537,7 @@ python scripts/test_print_upload.py ./tests/demo.jpg --layout-type eight
 
 ### 4) `MULTIPLE_FACES_DETECTED`
 
-说明图里检测到了多张脸，不符合证件照制作要求。生成接口会直接拒绝继续处理。
+说明图里在**候选框过滤、去重、主脸优先**之后，仍检测到了多张有效独立人脸，不符合证件照制作要求。生成接口会直接拒绝继续处理。
 
 ### 5) `IMAGE_TOO_BLURRY`
 

@@ -11,6 +11,7 @@ from core.exceptions import (
     ERROR_NO_FACE_DETECTED,
     ERROR_POSE_INVALID,
 )
+from services.face_postprocess_service import FacePostprocessService
 from services.quality_service import QualityService
 
 
@@ -22,6 +23,8 @@ class ValidationOutcome:
     reasons: list[str] = field(default_factory=list)
     message: str = '未检测到有效人脸'
     primaryFaceBox: dict | None = None
+    rawFaceCount: int = 0
+    filteredOutReasons: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -67,18 +70,7 @@ class ValidationService:
 
     def __init__(self):
         self.quality_service = QualityService()
-
-    @staticmethod
-    def _build_primary_face_box(faces) -> dict | None:
-        if len(faces) != 1:
-            return None
-        face = faces[0]
-        return {
-            'x': int(face['c']),
-            'y': int(face['r']),
-            'width': int(face['width']),
-            'height': int(face['height']),
-        }
+        self.face_postprocess_service = FacePostprocessService()
 
     def _build_message(self, reasons: list[str], passed: bool, for_generate: bool = False) -> str:
         if passed:
@@ -89,9 +81,10 @@ class ValidationService:
         return mapping.get(reasons[0], '图片不符合证件照制作要求')
 
     def validate(self, image_shape: tuple[int, ...], faces, blur_score: float) -> ValidationOutcome:
-        face_count = len(faces)
+        postprocess_result = self.face_postprocess_service.face_box_postprocess(faces)
+        face_count = len(postprocess_result.validFaces)
         has_face = face_count > 0
-        primary_face_box = self._build_primary_face_box(faces)
+        primary_face_box = postprocess_result.primaryFaceBox
         reasons: list[str] = []
 
         if face_count == 0:
@@ -120,6 +113,8 @@ class ValidationService:
             reasons=ordered_reasons,
             message=message,
             primaryFaceBox=primary_face_box,
+            rawFaceCount=postprocess_result.rawFaceCount,
+            filteredOutReasons=postprocess_result.filteredOutReasons,
         )
 
     def build_generate_error(self, reasons: list[str]) -> tuple[str, str]:
