@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from core.exceptions import AppException
 from constants.photo_sizes import PHOTO_SIZE_TEMPLATES, build_custom_template
 from pipeline.build_preview import PreviewBuilder
 from services.background_service import BackgroundService
@@ -9,6 +10,7 @@ from services.enhance_service import EnhanceService
 from services.print_service import PrintService
 from services.quality_service import QualityService
 from services.segment_service import SegmentService
+from services.validation_service import ValidationService
 from utils.config import get_settings
 from utils.file_utils import build_output_path, to_url_like_path
 from utils.image_utils import save_pil_image
@@ -23,6 +25,7 @@ class GenerateIdPhotoPipeline:
         self.crop_service = CropService()
         self.enhance_service = EnhanceService()
         self.quality_service = QualityService()
+        self.validation_service = ValidationService()
         self.print_service = PrintService()
         self.preview_builder = PreviewBuilder()
 
@@ -41,8 +44,11 @@ class GenerateIdPhotoPipeline:
             raise FileNotFoundError(f"original image not found: {original_image_path}")
 
         detect_result = self.detect_service.detect(image_id=image_id, image_path=original_image_path)
-        if not detect_result.hasFace:
-            raise ValueError("No face detected from source image")
+        if hasattr(detect_result, 'passed') and not detect_result.passed:
+            error_code, message = self.validation_service.build_generate_error(list(getattr(detect_result, 'reasons', [])))
+            raise AppException(message, error_code, 400)
+        if hasattr(detect_result, 'hasFace') and not detect_result.hasFace:
+            raise AppException('No face detected from source image', 'NO_FACE_DETECTED', 400)
 
         size_tpl = self._resolve_template(
             source_type=payload["sourceType"],

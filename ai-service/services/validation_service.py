@@ -1,18 +1,53 @@
 from __future__ import annotations
 
+import imghdr
 from dataclasses import dataclass, field
+from io import BytesIO
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, UnidentifiedImageError
 
 from core.exceptions import (
+    AppException,
     ERROR_FACE_OCCLUDED,
     ERROR_FACE_TOO_SMALL,
     ERROR_HEAD_CROPPED,
     ERROR_IMAGE_TOO_BLURRY,
+    ERROR_IMAGE_TOO_SMALL,
+    ERROR_INVALID_ARGUMENT,
+    ERROR_INVALID_IMAGE,
     ERROR_MULTIPLE_FACES_DETECTED,
     ERROR_NO_FACE_DETECTED,
     ERROR_POSE_INVALID,
 )
 from services.face_postprocess_service import FacePostprocessService
 from services.quality_service import QualityService
+from utils.config import get_settings
+
+
+@dataclass
+class LoadedImage:
+    filename: str
+    content_type: str
+    file_size: int
+    image: Image.Image
+    image_np: np.ndarray
+    width: int
+    height: int
+    format: str
+    mode: str
+
+    def metadata(self) -> dict:
+        return {
+            'filename': self.filename,
+            'contentType': self.content_type,
+            'fileSize': self.file_size,
+            'width': self.width,
+            'height': self.height,
+            'format': self.format,
+            'mode': self.mode,
+        }
 
 
 @dataclass
@@ -40,6 +75,8 @@ class ValidationOutcome:
             'imageWidth': self.imageWidth,
             'imageHeight': self.imageHeight,
             'primaryFaceBox': self.primaryFaceBox,
+            'rawFaceCount': self.rawFaceCount,
+            'filteredOutReasons': self.filteredOutReasons,
         }
 
 
@@ -74,9 +111,71 @@ class ValidationService:
         ERROR_HEAD_CROPPED: '头部截断过于严重，请上传头部完整的单人正脸照片',
     }
 
-    def __init__(self):
+    def __init__(self) -> None:
+        self.settings = get_settings()
         self.quality_service = QualityService()
         self.face_postprocess_service = FacePostprocessService()
+
+    def load_image(self, file_bytes: bytes, filename: str, content_type: str | None = None) -> LoadedImage:
+        suffix = Path(filename or 'upload.jpg').suffix.lower()
+        if suffix and suffix not in self.settings.allowed_image_extensions:
+            raise AppException('不支持的图片格式，请上传 JPG/PNG/BMP/WEBP 图片', ERROR_INVALID_IMAGE, 400)
+
+        declared_type = (content_type or '').lower()
+        if declared_type and declared_type not in self.settings.allowed_image_content_types:
+            raise AppException('文件 Content-Type 不是受支持的图片类型', ERROR_INVALID_IMAGE, 400)
+
+        size_limit = self.settings.max_upload_mb * 1024 * 1024
+        if len(file_bytes) == 0:
+            raise AppException('上传文件为空', ERROR_INVALID_ARGUMENT, 400)
+        if len(file_bytes) > size_limit:
+            raise AppException(
+                f'文件大小超过限制，当前最大允许 {self.settings.max_upload_mb} MB',
+                ERROR_INVALID_ARGUMENT,
+                400,
+            )
+
+        guessed_kind = imghdr.what(None, h=file_bytes)
+        if guessed_kind is None:
+            raise AppException('上传文件不是有效图片', ERROR_INVALID_IMAGE, 400)
+
+        try:
+            image = Image.open(BytesIO(file_bytes))
+            image.load()
+        except (UnidentifiedImageError, OSError) as exc:
+            raise AppException('图片解析失败，请确认文件未损坏', ERROR_INVALID_IMAGE, 400) from exc
+
+        rgb_image = image.convert('RGB')
+        width, height = rgb_image.size
+        if width < self.settings.min_image_width or height < self.settings.min_image_height:
+            raise AppException(
+                f'图片尺寸过小，最小要求为 {self.settings.min_image_width}x{self.settings.min_image_height}',
+                ERROR_IMAGE_TOO_SMALL,
+                400,
+            )
+
+        return LoadedImage(
+            filename=filename or f'upload.{guessed_kind}',
+            content_type=declared_type or f'image/{guessed_kind}',
+            file_size=len(file_bytes),
+            image=rgb_image,
+            image_np=np.array(rgb_image),
+            width=width,
+            height=height,
+            format=(image.format or guessed_kind or 'UNKNOWN').upper(),
+            mode=image.mode,
+        )
+
+    def validate_upload_image(self, loaded_image: LoadedImage) -> dict:
+        quality_status, quality_message = self.quality_service.evaluate(loaded_image.image)
+        return {
+            'passed': True,
+            'message': '图片基础校验通过',
+            'reasons': [],
+            'metadata': loaded_image.metadata(),
+            'qualityStatus': quality_status,
+            'qualityMessage': quality_message,
+        }
 
     def _build_message(self, reasons: list[str], passed: bool, for_generate: bool = False) -> str:
         if passed:

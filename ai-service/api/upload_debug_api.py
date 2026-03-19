@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, UploadFile
 
-from core.config import get_settings
+from utils.config import get_settings
 from models.request_models import GenerateIdPhotoRequest
 from pipeline.generate_id_photo import GenerateIdPhotoPipeline
 from services.detect_service import DetectService

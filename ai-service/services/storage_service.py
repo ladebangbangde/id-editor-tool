@@ -5,8 +5,8 @@ from pathlib import Path
 
 from fastapi import UploadFile
 
-from core.config import get_settings
 from core.exceptions import AppException, ERROR_INVALID_ARGUMENT
+from utils.config import get_settings
 from utils.file_utils import ensure_upload_dirs, public_url_for_path
 
 
@@ -24,7 +24,7 @@ class StorageService:
         ensure_upload_dirs()
         safe_name = self._sanitize_name(upload_file.filename)
         suffix = Path(safe_name).suffix.lower() or '.jpg'
-        if suffix not in {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}:
+        if suffix not in set(self.settings.allowed_image_extensions):
             raise AppException('Unsupported upload file type', ERROR_INVALID_ARGUMENT, 400)
 
         generated_id = image_id or Path(safe_name).stem or secrets.token_hex(8)

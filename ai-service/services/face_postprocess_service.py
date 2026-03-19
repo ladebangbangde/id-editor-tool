@@ -112,6 +112,14 @@ class FacePostprocessService:
         }
 
     def _is_duplicate_candidate(self, candidate: dict, kept: dict) -> bool:
+        if (
+            candidate['x'] == kept['x']
+            and candidate['y'] == kept['y']
+            and candidate['width'] == kept['width']
+            and candidate['height'] == kept['height']
+        ):
+            return False
+
         iou = self._calc_iou(candidate, kept)
         overlap_ratio = self._calc_overlap_over_smaller(candidate, kept)
         return (

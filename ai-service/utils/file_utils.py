@@ -58,3 +58,7 @@ def to_url_like_path(path: str | Path) -> str:
     public_prefix = settings.upload_public_prefix.strip("/")
     rel = str(relative).replace("\\", "/")
     return f"{public_prefix}/{rel}"
+
+
+def public_url_for_path(path: str | Path) -> str:
+    return to_url_like_path(path)
