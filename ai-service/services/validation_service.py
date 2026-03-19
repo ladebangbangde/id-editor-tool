@@ -62,6 +62,7 @@ class ValidationOutcome:
     imageHeight: int = 0
     primaryFaceBox: dict | None = None
     rawFaceCount: int = 0
+    validFaceBoxes: list[dict] = field(default_factory=list)
     filteredOutReasons: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -76,6 +77,7 @@ class ValidationOutcome:
             'imageHeight': self.imageHeight,
             'primaryFaceBox': self.primaryFaceBox,
             'rawFaceCount': self.rawFaceCount,
+            'validFaceBoxes': self.validFaceBoxes,
             'filteredOutReasons': self.filteredOutReasons,
         }
 
@@ -222,6 +224,7 @@ class ValidationService:
             imageHeight=image_shape[0],
             primaryFaceBox=primary_face_box,
             rawFaceCount=postprocess_result.rawFaceCount,
+            validFaceBoxes=postprocess_result.validFaces,
             filteredOutReasons=postprocess_result.filteredOutReasons,
         )
 

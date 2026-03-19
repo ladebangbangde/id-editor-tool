@@ -104,15 +104,16 @@ class PipelineValidationTests(unittest.TestCase):
             with (
                 patch.object(pipeline.detect_service, 'detect', return_value=passed),
                 patch.object(pipeline.segment_service, 'segment_person', return_value=None),
-                patch.object(pipeline.background_service, 'apply_background', return_value=Image.new('RGB', (600, 800), color='white')),
-                patch.object(pipeline.crop_service, 'crop_to_size', side_effect=lambda image, *_args, **_kwargs: image),
-                patch.object(pipeline.enhance_service, 'enhance', side_effect=lambda image, *_args, **_kwargs: image),
-                patch.object(pipeline.preview_builder, 'build_preview', return_value='/uploads/preview/pass_preview.jpg'),
-                patch.object(pipeline.quality_service, 'evaluate', return_value=('passed', '质量检测通过')),
-                patch.object(pipeline.print_service, 'generate_layout', return_value='/uploads/print/pass_print.jpg'),
+                patch.object(pipeline.background_service, 'apply_background', return_value={'image': Image.new('RGB', (600, 800), color='white'), 'method': 'segmentation_composite', 'note': None}),
+                patch.object(pipeline.crop_service, 'crop_to_size', return_value=SimpleNamespace(image=Image.new('RGB', (600, 800), color='white'), cropBox={'x': 0, 'y': 0, 'width': 600, 'height': 800}, targetWidth=390, targetHeight=567, headRatio=0.6, method='face_guided_crop')),
+                patch.object(pipeline.enhance_service, 'enhance', return_value={'image': Image.new('RGB', (600, 800), color='white'), 'appliedOperations': ['keep_original']}),
+                patch.object(pipeline.preview_builder, 'build_preview', return_value={'previewPath': 'uploads/preview/pass_preview.jpg', 'previewUrl': '/uploads/preview/pass_preview.jpg'}),
+                patch.object(pipeline.quality_service, 'evaluate_details', return_value={'qualityStatus': 'passed', 'qualityMessage': '质量检测通过', 'resolutionTooLow': False, 'clarityInsufficient': False, 'suitableForIdPhoto': True}),
+                patch.object(pipeline.print_service, 'generate_layout', return_value={'printPath': 'uploads/print/pass_print.jpg', 'printUrl': '/uploads/print/pass_print.jpg', 'layoutType': 'six', 'paperType': '6inch', 'photoCount': 6}),
                 patch('pipeline.generate_id_photo.build_output_path', return_value=str(hd_output)),
                 patch('pipeline.generate_id_photo.save_pil_image', return_value=None),
-                patch('pipeline.generate_id_photo.to_url_like_path', return_value='/uploads/hd/pass_hd.jpg'),
+                patch('pipeline.generate_id_photo.to_url_like_path', side_effect=lambda value: 'uploads/hd/pass_hd.jpg' if 'out_hd' in str(value) else 'uploads/original/input.jpg'),
+                patch('pipeline.generate_id_photo.public_url_for_path', side_effect=lambda value: '/uploads/hd/pass_hd.jpg' if 'out_hd' in str(value) else '/uploads/original/input.jpg'),
             ):
                 result = pipeline.run(
                     {
@@ -128,6 +129,7 @@ class PipelineValidationTests(unittest.TestCase):
         self.assertEqual(result['imageId'], 'passed')
         self.assertEqual(result['hdUrl'], '/uploads/hd/pass_hd.jpg')
         self.assertEqual(result['printUrl'], '/uploads/print/pass_print.jpg')
+        self.assertEqual(result['previewPath'], 'uploads/preview/pass_preview.jpg')
 
     def test_print_rejects_failed_validation(self):
         pipeline = GeneratePrintLayoutPipeline()
@@ -149,7 +151,7 @@ class PipelineValidationTests(unittest.TestCase):
             self._write_temp_image(hd_image)
             with (
                 patch.object(pipeline.detect_service, 'detect', return_value=passed),
-                patch.object(pipeline.print_service, 'generate_layout', return_value='/uploads/print/pass_print.jpg'),
+                patch.object(pipeline.print_service, 'generate_layout', return_value={'printPath': 'uploads/print/pass_print.jpg', 'printUrl': '/uploads/print/pass_print.jpg', 'layoutType': 'six', 'paperType': '6inch', 'photoCount': 6}),
             ):
                 result = pipeline.run('passed', str(hd_image), 'six')
         self.assertEqual(result['printUrl'], '/uploads/print/pass_print.jpg')

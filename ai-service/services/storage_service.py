@@ -7,7 +7,7 @@ from fastapi import UploadFile
 
 from core.exceptions import AppException, ERROR_INVALID_ARGUMENT
 from utils.config import get_settings
-from utils.file_utils import ensure_upload_dirs, public_url_for_path
+from utils.file_utils import ensure_upload_dirs, public_url_for_path, to_url_like_path
 
 
 class StorageService:
@@ -51,6 +51,7 @@ class StorageService:
         return {
             'imageId': generated_id,
             'originalImagePath': str(target_path),
+            'originalImageStoragePath': to_url_like_path(target_path),
             'originalImageUrl': public_url_for_path(target_path),
             'filename': target_name,
         }

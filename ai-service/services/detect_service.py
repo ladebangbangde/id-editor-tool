@@ -12,8 +12,9 @@ from services.validation_service import LoadedImage, ValidationOutcome, Validati
 @dataclass
 class DetectOutcome:
     imageId: str
-    hasFace: bool
+    faceDetected: bool
     faceCount: int
+    faceBoxes: list[dict]
     blurScore: float
     poseValid: bool
     occlusionDetected: bool
@@ -26,11 +27,22 @@ class DetectOutcome:
     imageMode: str
     validationPassed: bool
     reasons: list[str]
+    suggestion: str
     message: str
     primaryFaceBox: dict | None = None
 
+    @property
+    def hasFace(self) -> bool:
+        return self.faceDetected
+
+    @property
+    def passed(self) -> bool:
+        return self.validationPassed
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        payload = asdict(self)
+        payload['hasFace'] = self.faceDetected
+        return payload
 
 
 class DetectService:
@@ -60,6 +72,18 @@ class DetectService:
             for (x, y, w, h) in faces
         ]
 
+    @staticmethod
+    def _build_suggestion(validation_result: ValidationOutcome, quality_details: dict) -> str:
+        if validation_result.passed:
+            return '照片可以直接进入证件照制作流程'
+        if not validation_result.hasFace:
+            return '请上传单人正脸、五官清晰、背景相对简洁的照片'
+        if quality_details['resolutionTooLow']:
+            return '请使用更高分辨率原图，避免上传被压缩后的聊天截图'
+        if quality_details['clarityInsufficient']:
+            return '可继续生成，但建议换用更清晰的原图以提升最终效果'
+        return validation_result.message
+
     def detect_from_loaded_image(self, image_id: str, loaded_image: LoadedImage) -> DetectOutcome:
         image_bgr = cv2.cvtColor(loaded_image.image_np, cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
@@ -71,7 +95,7 @@ class DetectService:
             faces=normalized_faces,
             blur_score=blur_score,
         )
-        quality_status, quality_message = self.quality_service.evaluate(loaded_image.image)
+        quality_details = self.quality_service.evaluate_details(loaded_image.image)
 
         if validation_result.passed:
             message = '检测完成，图片可进入证件照处理流程'
@@ -82,20 +106,22 @@ class DetectService:
 
         return DetectOutcome(
             imageId=image_id,
-            hasFace=validation_result.hasFace,
+            faceDetected=validation_result.hasFace,
             faceCount=validation_result.faceCount,
+            faceBoxes=validation_result.validFaceBoxes,
             blurScore=blur_score,
             poseValid=ERROR_POSE_INVALID not in validation_result.reasons,
             occlusionDetected=ERROR_FACE_OCCLUDED in validation_result.reasons,
             isProcessable=validation_result.passed,
-            qualityStatus=quality_status,
-            qualityMessage=quality_message,
+            qualityStatus=quality_details['qualityStatus'],
+            qualityMessage=quality_details['qualityMessage'],
             imageWidth=loaded_image.width,
             imageHeight=loaded_image.height,
             imageFormat=loaded_image.format,
             imageMode=loaded_image.mode,
             validationPassed=validation_result.passed,
             reasons=validation_result.reasons,
+            suggestion=self._build_suggestion(validation_result, quality_details),
             message=message,
             primaryFaceBox=validation_result.primaryFaceBox,
         )

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Tuple
-
 from PIL import Image
 
 from constants.status import QUALITY_STATUS_FAILED, QUALITY_STATUS_PASSED, QUALITY_STATUS_WARNING
@@ -12,13 +10,33 @@ class QualityService:
     def __init__(self) -> None:
         self.settings = get_settings()
 
-    def evaluate(self, image: Image.Image) -> Tuple[str, str]:
+    def evaluate_details(self, image: Image.Image) -> dict:
         width, height = image.size
-        if width < self.settings.min_image_width or height < self.settings.min_image_height:
-            return QUALITY_STATUS_FAILED, '输出尺寸过小'
-        if width < 480 or height < 640:
-            return QUALITY_STATUS_WARNING, '清晰度一般，建议使用更高分辨率原图'
-        return QUALITY_STATUS_PASSED, '质量通过'
+        resolution_too_low = width < self.settings.min_image_width or height < self.settings.min_image_height
+        clarity_insufficient = width < 480 or height < 640
+        suitable = not resolution_too_low
+
+        if resolution_too_low:
+            status = QUALITY_STATUS_FAILED
+            message = f'分辨率过低，建议至少达到 {self.settings.min_image_width}x{self.settings.min_image_height}'
+        elif clarity_insufficient:
+            status = QUALITY_STATUS_WARNING
+            message = '清晰度一般，建议使用更高分辨率原图'
+        else:
+            status = QUALITY_STATUS_PASSED
+            message = '质量通过'
+
+        return {
+            'qualityStatus': status,
+            'qualityMessage': message,
+            'resolutionTooLow': resolution_too_low,
+            'clarityInsufficient': clarity_insufficient,
+            'suitableForIdPhoto': suitable,
+        }
+
+    def evaluate(self, image: Image.Image) -> tuple[str, str]:
+        details = self.evaluate_details(image)
+        return details['qualityStatus'], details['qualityMessage']
 
     def is_image_too_blurry(self, blur_score: float) -> bool:
         return blur_score < self.settings.blur_score_threshold
@@ -36,7 +54,7 @@ class QualityService:
         )
 
     def is_pose_invalid(self, image_shape: tuple[int, ...], face_box: dict) -> bool:
-        image_height, image_width = image_shape[:2]
+        _image_height, image_width = image_shape[:2]
         face_center_x = face_box['x'] + face_box['width'] / 2
         image_center_x = image_width / 2
         center_offset_ratio = abs(face_center_x - image_center_x) / max(image_width, 1)

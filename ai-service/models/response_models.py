@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any, Generic, TypeVar
+
+from pydantic import BaseModel
+
+
+T = TypeVar('T')
 
 
 class RootResponse(BaseModel):
@@ -11,64 +16,24 @@ class RootResponse(BaseModel):
     openapi: str
 
 
-class HealthResponse(BaseModel):
+class ApiResponse(BaseModel, Generic[T]):
+    success: bool = True
+    message: str = 'OK'
+    errorCode: str | None = None
+    data: T | None = None
+
+
+class ErrorResponse(ApiResponse[dict]):
+    success: bool = False
+
+
+class HealthPayload(BaseModel):
     service: str
     status: str
-
-
-class ErrorResponse(BaseModel):
-    success: bool = False
-    message: str
-    errorCode: str | None = None
-    data: dict | None = None
-
-
-class BackgroundColorModel(BaseModel):
-    key: str
-    nameZh: str
-    nameEn: str
-    rgb: list[int]
-    hex: str
-    description: str
-
-
-class BackgroundColorsResponse(BaseModel):
-    success: bool = True
-    message: str
-    data: list[BackgroundColorModel]
-
-
-class PhotoSizeModel(BaseModel):
-    sceneKey: str
-    sceneName: str
-    sceneNameEn: str
-    widthMm: int
-    heightMm: int
-    pixelWidth: int
-    pixelHeight: int
-    unit: str
-    description: str
-
-
-class PhotoSizesResponse(BaseModel):
-    success: bool = True
-    message: str
-    data: list[PhotoSizeModel]
-
-
-class ImageMetadataModel(BaseModel):
-    filename: str
-    contentType: str
-    fileSize: int
-    width: int
-    height: int
-    format: str
-    mode: str
-
-
-class QualityResultModel(BaseModel):
-    status: str
-    message: str
+    host: str
+    port: int
+    uploadRoot: str
+    staticMountPath: str
 
 
 class FaceBoxModel(BaseModel):
@@ -80,56 +45,64 @@ class FaceBoxModel(BaseModel):
 
 class DetectResultModel(BaseModel):
     imageId: str
-    hasFace: bool
+    faceDetected: bool
     faceCount: int
-    blurScore: float
-    poseValid: bool
-    occlusionDetected: bool
-    isProcessable: bool
-    qualityStatus: str
-    qualityMessage: str
+    faceBoxes: list[FaceBoxModel]
+    primaryFaceBox: FaceBoxModel | None = None
     imageWidth: int
     imageHeight: int
     imageFormat: str
     imageMode: str
+    blurScore: float
+    poseValid: bool
+    occlusionDetected: bool
+    isProcessable: bool
     validationPassed: bool
     reasons: list[str]
-    message: str
-    primaryFaceBox: FaceBoxModel | None = None
-
-
-class DetectResponse(BaseModel):
-    success: bool = True
-    message: str
-    data: DetectResultModel
-
-
-class ValidateResultModel(BaseModel):
-    passed: bool
-    message: str
-    reasons: list[str]
-    metadata: ImageMetadataModel
     qualityStatus: str
     qualityMessage: str
-
-
-class ValidateResponse(BaseModel):
-    success: bool = True
+    suggestion: str
     message: str
-    data: ValidateResultModel
+    originalImagePath: str | None = None
+    originalImageUrl: str | None = None
 
 
-class ChangeBackgroundResultModel(BaseModel):
-    accepted: bool
-    processed: bool
+class GenerateResultModel(BaseModel):
+    imageId: str
+    originalImagePath: str
+    originalImageUrl: str
+    previewPath: str
+    previewUrl: str
+    hdPath: str
+    hdUrl: str
+    printPath: str | None = None
+    printUrl: str | None = None
     backgroundColor: str
-    backgroundColorHex: str
-    message: str
-    metadata: ImageMetadataModel
-    note: str | None = None
+    method: str
+    widthMm: int
+    heightMm: int
+    pixelWidth: int
+    pixelHeight: int
+    qualityStatus: str
+    qualityMessage: str
+    cropBox: dict[str, int]
+    targetWidth: int
+    targetHeight: int
+    headRatio: float
+    appliedOperations: list[str]
+    processNotes: list[str]
+    layoutType: str | None = None
+    paperType: str | None = None
+    photoCount: int | None = None
 
 
-class ChangeBackgroundResponse(BaseModel):
-    success: bool = True
-    message: str
-    data: ChangeBackgroundResultModel
+class HealthResponse(ApiResponse[HealthPayload]):
+    pass
+
+
+class DetectResponse(ApiResponse[DetectResultModel]):
+    pass
+
+
+class GenericDataResponse(ApiResponse[dict[str, Any]]):
+    pass

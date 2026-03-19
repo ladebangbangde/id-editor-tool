@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     app_env: str = Field(default='development', validation_alias=AliasChoices('APP_ENV'))
     app_host: str = Field(default='0.0.0.0', validation_alias=AliasChoices('HOST', 'APP_HOST'))
     app_port: int = Field(default=8000, validation_alias=AliasChoices('PORT', 'APP_PORT'))
-    app_version: str = Field(default='1.1.0', validation_alias=AliasChoices('APP_VERSION'))
+    app_version: str = Field(default='1.2.0', validation_alias=AliasChoices('APP_VERSION'))
     docs_url: str = Field(default='/docs', validation_alias=AliasChoices('DOCS_URL'))
     redoc_url: str = Field(default='/redoc', validation_alias=AliasChoices('REDOC_URL'))
     openapi_url: str = Field(default='/openapi.json', validation_alias=AliasChoices('OPENAPI_URL'))
@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     hd_dir: str = Field(default='hd', validation_alias=AliasChoices('HD_DIR'))
     print_dir: str = Field(default='print', validation_alias=AliasChoices('PRINT_DIR'))
     temp_dir: str = Field(default='temp', validation_alias=AliasChoices('TEMP_DIR'))
+    save_intermediate: bool = Field(default=True, validation_alias=AliasChoices('SAVE_INTERMEDIATE'))
 
     max_upload_mb: int = Field(default=15, validation_alias=AliasChoices('MAX_UPLOAD_MB'))
     allowed_image_extensions: tuple[str, ...] = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
@@ -44,16 +45,10 @@ class Settings(BaseSettings):
     min_face_height: int = Field(default=60, validation_alias=AliasChoices('MIN_FACE_HEIGHT'))
     min_face_area_ratio: float = Field(default=0.08, validation_alias=AliasChoices('MIN_FACE_AREA_RATIO'))
     min_face_height_ratio: float = Field(default=0.20, validation_alias=AliasChoices('MIN_FACE_HEIGHT_RATIO'))
-    max_face_center_offset_ratio: float = Field(
-        default=0.18,
-        validation_alias=AliasChoices('MAX_FACE_CENTER_OFFSET_RATIO'),
-    )
+    max_face_center_offset_ratio: float = Field(default=0.18, validation_alias=AliasChoices('MAX_FACE_CENTER_OFFSET_RATIO'))
     min_face_aspect_ratio: float = Field(default=0.65, validation_alias=AliasChoices('MIN_FACE_ASPECT_RATIO'))
     max_face_aspect_ratio: float = Field(default=1.35, validation_alias=AliasChoices('MAX_FACE_ASPECT_RATIO'))
-    occluded_face_aspect_ratio: float = Field(
-        default=0.55,
-        validation_alias=AliasChoices('OCCLUDED_FACE_ASPECT_RATIO'),
-    )
+    occluded_face_aspect_ratio: float = Field(default=0.55, validation_alias=AliasChoices('OCCLUDED_FACE_ASPECT_RATIO'))
     edge_touch_ratio: float = Field(default=0.03, validation_alias=AliasChoices('EDGE_TOUCH_RATIO'))
 
     min_valid_face_width: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_WIDTH'))

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, UploadFile
 
-from utils.config import get_settings
 from models.request_models import GenerateIdPhotoRequest
+from models.response_models import DetectResponse, GenericDataResponse
 from pipeline.generate_id_photo import GenerateIdPhotoPipeline
+from pipeline.generate_print_layout import GeneratePrintLayoutPipeline
 from services.detect_service import DetectService
 from services.storage_service import StorageService
+from utils.config import get_settings
+from utils.file_utils import resolve_input_path
 from utils.response_utils import success_response
 
 router = APIRouter(tags=['upload-debug'])
@@ -14,37 +17,39 @@ settings = get_settings()
 storage_service = StorageService()
 detect_service = DetectService()
 generate_pipeline = GenerateIdPhotoPipeline()
+print_pipeline = GeneratePrintLayoutPipeline()
 
 
-@router.post('/ai/detect-upload')
+@router.post('/ai/detect-upload', response_model=DetectResponse)
 async def detect_upload(
-    image: UploadFile = File(...),
+    file: UploadFile = File(...),
     imageId: str | None = Form(default=None),
 ):
-    stored = storage_service.save_upload(image, imageId)
+    stored = storage_service.save_upload(file, imageId)
     result = detect_service.detect(stored['imageId'], stored['originalImagePath']).to_dict()
-    result['originalImagePath'] = stored['originalImagePath']
+    result['originalImagePath'] = stored['originalImageStoragePath']
     result['originalImageUrl'] = stored['originalImageUrl']
     return success_response(result, message='OK')
 
 
-@router.post('/ai/generate-id-photo-upload')
+@router.post('/ai/generate-id-photo-upload', response_model=GenericDataResponse)
 async def generate_id_photo_upload(
-    image: UploadFile = File(...),
+    file: UploadFile = File(...),
     imageId: str | None = Form(default=None),
     sourceType: str = Form(default='scene'),
     sceneKey: str | None = Form(default='passport'),
+    sizeName: str | None = Form(default=None),
     customWidthMm: int | None = Form(default=None),
     customHeightMm: int | None = Form(default=None),
     backgroundColor: str = Form(default=settings.default_bg_color),
     beautyEnabled: bool = Form(default=False),
     printLayoutType: str | None = Form(default=None),
 ):
-    stored = storage_service.save_upload(image, imageId)
+    stored = storage_service.save_upload(file, imageId)
     payload = GenerateIdPhotoRequest(
         imageId=stored['imageId'],
         sourceType=sourceType,
-        sceneKey=sceneKey,
+        sceneKey=sizeName or sceneKey,
         customWidthMm=customWidthMm,
         customHeightMm=customHeightMm,
         backgroundColor=backgroundColor,
@@ -53,43 +58,44 @@ async def generate_id_photo_upload(
         originalImagePath=stored['originalImagePath'],
     )
     result = generate_pipeline.run(payload.model_dump())
-    result['originalImagePath'] = stored['originalImagePath']
-    result['originalImageUrl'] = stored['originalImageUrl']
     return success_response(result, message='Generate success')
 
 
-@router.post('/ai/generate-print-layout-upload')
+@router.post('/ai/generate-print-layout-upload', response_model=GenericDataResponse)
 async def generate_print_layout_upload(
-    image: UploadFile = File(...),
+    file: UploadFile = File(...),
     imageId: str | None = Form(default=None),
     layoutType: str = Form(default=settings.default_layout_type),
     sourceType: str = Form(default='scene'),
     sceneKey: str | None = Form(default='passport'),
+    sizeName: str | None = Form(default=None),
     customWidthMm: int | None = Form(default=None),
     customHeightMm: int | None = Form(default=None),
     backgroundColor: str = Form(default=settings.default_bg_color),
     beautyEnabled: bool = Form(default=False),
 ):
-    stored = storage_service.save_upload(image, imageId)
+    stored = storage_service.save_upload(file, imageId)
     payload = GenerateIdPhotoRequest(
         imageId=stored['imageId'],
         sourceType=sourceType,
-        sceneKey=sceneKey,
+        sceneKey=sizeName or sceneKey,
         customWidthMm=customWidthMm,
         customHeightMm=customHeightMm,
         backgroundColor=backgroundColor,
         beautyEnabled=beautyEnabled,
-        printLayoutType=layoutType,
+        printLayoutType=None,
         originalImagePath=stored['originalImagePath'],
     )
     generated = generate_pipeline.run(payload.model_dump())
-    result = {
-        'imageId': generated['imageId'],
-        'layoutType': layoutType,
-        'printUrl': generated['printUrl'],
-        'previewUrl': generated['previewUrl'],
-        'hdUrl': generated['hdUrl'],
-        'originalImagePath': stored['originalImagePath'],
-        'originalImageUrl': stored['originalImageUrl'],
-    }
+    result = print_pipeline.run(stored['imageId'], resolve_input_path(generated['hdPath']), layoutType)
+    result.update(
+        {
+            'originalImagePath': generated['originalImagePath'],
+            'originalImageUrl': generated['originalImageUrl'],
+            'previewPath': generated['previewPath'],
+            'previewUrl': generated['previewUrl'],
+            'hdPath': generated['hdPath'],
+            'hdUrl': generated['hdUrl'],
+        }
+    )
     return success_response(result, message='Generate print layout success')

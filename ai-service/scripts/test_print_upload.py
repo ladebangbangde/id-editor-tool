@@ -13,6 +13,7 @@ def main() -> None:
     parser.add_argument('--layout-type', default='six', choices=['six', 'eight', 'twelve'])
     parser.add_argument('--source-type', default='scene', choices=['scene', 'custom'])
     parser.add_argument('--scene-key', default='passport')
+    parser.add_argument('--size-name')
     parser.add_argument('--custom-width-mm', type=int)
     parser.add_argument('--custom-height-mm', type=int)
     parser.add_argument('--background-color', default='white', choices=['white', 'blue', 'red'])
@@ -28,6 +29,8 @@ def main() -> None:
         'backgroundColor': args.background_color,
         'beautyEnabled': str(args.beauty_enabled).lower(),
     }
+    if args.size_name:
+        data['sizeName'] = args.size_name
     if args.custom_width_mm:
         data['customWidthMm'] = str(args.custom_width_mm)
     if args.custom_height_mm:
@@ -36,7 +39,7 @@ def main() -> None:
     with image_path.open('rb') as fp:
         response = requests.post(
             f'{args.base_url}/ai/generate-print-layout-upload',
-            files={'image': (image_path.name, fp, 'image/jpeg')},
+            files={'file': (image_path.name, fp, 'image/jpeg')},
             data=data,
             timeout=300,
         )

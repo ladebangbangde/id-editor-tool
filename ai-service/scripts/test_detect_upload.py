@@ -16,7 +16,7 @@ def main() -> None:
     with image_path.open('rb') as fp:
         response = requests.post(
             f'{args.base_url}/ai/detect-upload',
-            files={'image': (image_path.name, fp, 'image/jpeg')},
+            files={'file': (image_path.name, fp, 'image/jpeg')},
             data={'imageId': args.image_id},
             timeout=120,
         )
