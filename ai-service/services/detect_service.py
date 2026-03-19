@@ -1,8 +1,12 @@
 from dataclasses import asdict, dataclass
 
-import cv2
+import numpy as np
+from scipy.ndimage import laplace
+from skimage import color, data
+from skimage.feature import Cascade
 
-from utils.image_utils import read_image_cv
+from core.exceptions import AppException, ERROR_INVALID_IMAGE
+from utils.image_utils import read_image_array
 
 
 @dataclass
@@ -14,6 +18,7 @@ class DetectOutcome:
     poseValid: bool
     occlusionDetected: bool
     message: str
+    primaryFaceBox: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -21,35 +26,55 @@ class DetectOutcome:
 
 class DetectService:
     def __init__(self):
-        self.face_detector = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
+        self.face_detector = Cascade(data.lbp_frontal_face_cascade_filename())
 
     @staticmethod
-    def _calc_blur_score(image_bgr) -> float:
-        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-        lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        normalized = min(max(lap_var / 500.0, 0.0), 1.0)
-        return round(float(normalized), 2)
+    def _calc_blur_score(image_rgb: np.ndarray) -> float:
+        gray = color.rgb2gray(image_rgb)
+        lap_var = float(laplace(gray).var())
+        normalized = min(max(lap_var / 0.02, 0.0), 1.0)
+        return round(normalized, 2)
+
+    def detect_faces(self, image_path: str):
+        image = read_image_array(image_path)
+        if image.ndim < 2:
+            raise AppException('Invalid image content', ERROR_INVALID_IMAGE, 400)
+        gray = color.rgb2gray(image[:, :, :3])
+        faces = self.face_detector.detect_multi_scale(
+            img=gray,
+            scale_factor=1.2,
+            step_ratio=1,
+            min_size=(60, 60),
+            max_size=(image.shape[0], image.shape[1]),
+        )
+        return image, faces
 
     def detect(self, image_id: str, image_path: str) -> DetectOutcome:
-        image = read_image_cv(image_path)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = self.face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+        image, faces = self.detect_faces(image_path)
         face_count = len(faces)
-        blur_score = self._calc_blur_score(image)
+        blur_score = self._calc_blur_score(image[:, :, :3])
         has_face = face_count > 0
         pose_valid = face_count == 1
         occlusion_detected = False
 
         if not has_face:
-            msg = "未检测到人脸"
+            msg = '未检测到人脸'
         elif face_count > 1:
-            msg = "检测到多张人脸，建议更换照片"
+            msg = '检测到多张人脸，建议更换照片'
         elif blur_score < 0.35:
-            msg = "照片清晰度不足，建议更换照片"
+            msg = '照片清晰度不足，建议更换照片'
         else:
-            msg = "照片可用于制作证件照"
+            msg = '照片可用于制作证件照'
+
+        primary_face_box = None
+        if face_count > 0:
+            largest_face = max(faces, key=lambda box: box['width'] * box['height'])
+            primary_face_box = {
+                'x': int(largest_face['c']),
+                'y': int(largest_face['r']),
+                'width': int(largest_face['width']),
+                'height': int(largest_face['height']),
+            }
 
         return DetectOutcome(
             imageId=image_id,
@@ -59,4 +84,5 @@ class DetectService:
             poseValid=pose_valid,
             occlusionDetected=occlusion_detected,
             message=msg,
+            primaryFaceBox=primary_face_box,
         )

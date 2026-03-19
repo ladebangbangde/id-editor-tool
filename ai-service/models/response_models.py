@@ -7,6 +7,7 @@ class ApiResponse(BaseModel):
     success: bool
     message: str
     data: Optional[dict] = None
+    errorCode: Optional[str] = None
 
 
 class DetectResult(BaseModel):
@@ -17,6 +18,7 @@ class DetectResult(BaseModel):
     poseValid: bool
     occlusionDetected: bool
     message: str
+    primaryFaceBox: Optional[dict] = None
 
 
 class GenerateIdPhotoResult(BaseModel):
