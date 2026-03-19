@@ -1,28 +1,22 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class ApiResponse(BaseModel):
     success: bool
     message: str
     data: Optional[dict] = None
-    errorCode: Optional[str] = None
 
 
 class DetectResult(BaseModel):
     imageId: str
     hasFace: bool
     faceCount: int
-    pass_: bool = Field(alias='pass')
-    reasons: list[str]
-    blurScore: Optional[float] = None
+    blurScore: float
     poseValid: bool
     occlusionDetected: bool
     message: str
-    imageWidth: int
-    imageHeight: int
-    primaryFaceBox: Optional[dict] = None
 
 
 class GenerateIdPhotoResult(BaseModel):

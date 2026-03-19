@@ -1,0 +1,15 @@
+version: '3.9'
+services:
+  ai-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-id-photo-service
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Host shared uploads directory, must be same host path used by main server container
+      - ../uploads:/data/uploads
+    restart: unless-stopped
