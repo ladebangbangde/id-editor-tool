@@ -38,6 +38,10 @@ class GenerateIdPhotoPipeline:
             return PHOTO_SIZE_TEMPLATES[scene_key]
         return build_custom_template(custom_w, custom_h, dpi=self.settings.jpeg_dpi)
 
+    @staticmethod
+    def _final_output_type(print_result: dict | None) -> str:
+        return 'print_layout' if print_result else 'id_photo'
+
     def run(self, payload: dict) -> dict:
         image_id = payload['imageId']
         original_image_path = payload['originalImagePath']
@@ -68,14 +72,18 @@ class GenerateIdPhotoPipeline:
 
         process_notes: list[str] = []
         seg_output_path = build_output_path('temp', f'{image_id}_segmented.png')
+        segmentation_succeeded = False
+        whether_fallback_used = False
         try:
             self.segment_service.segment_person(original_image_path, seg_output_path)
+            segmentation_succeeded = True
             background_result = self.background_service.apply_background(
                 transparent_png_path=seg_output_path,
                 background_color=payload['backgroundColor'],
                 preview_path=seg_output_path,
             )
         except Exception as exc:
+            whether_fallback_used = True
             process_notes.append(f'segmentation fallback: {exc}')
             background_result = self.background_service.fallback_original(
                 image_path=original_image_path,
@@ -134,6 +142,10 @@ class GenerateIdPhotoPipeline:
             'headRatio': crop_result.headRatio,
             'appliedOperations': enhance_result['appliedOperations'],
             'processNotes': process_notes,
+            'whetherFallbackUsed': whether_fallback_used,
+            'segmentationSucceeded': segmentation_succeeded,
+            'finalOutputType': self._final_output_type(print_result),
+            'canDirectlyUseForRegistration': quality_details['suitableForIdPhoto'] and validation_passed,
             'layoutType': print_result['layoutType'] if print_result else layout_type,
             'paperType': print_result['paperType'] if print_result else None,
             'photoCount': print_result['photoCount'] if print_result else None,

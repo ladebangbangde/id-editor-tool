@@ -12,7 +12,7 @@ router = APIRouter(tags=['detect'])
 detect_service = DetectService()
 
 
-@router.post('/ai/detect', response_model=DetectResponse)
+@router.post('/ai/detect', response_model=DetectResponse, summary='Detect face and validate source image')
 def detect(payload: DetectRequest):
     resolved_path = resolve_input_path(payload.originalImagePath)
     result = detect_service.detect(payload.imageId, resolved_path).to_dict()
