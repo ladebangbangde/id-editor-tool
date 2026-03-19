@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import UnidentifiedImageError
 
@@ -26,7 +26,7 @@ ensure_upload_dirs()
 init_logger()
 logger = get_logger()
 
-app = FastAPI(title='AI ID Photo Service', version='1.1.0')
+app = FastAPI(title='AI ID Photo Service', version='1.1.0', docs_url=None, redoc_url=None)
 app.mount(settings.static_mount_path, StaticFiles(directory=str(settings.upload_root_path), check_dir=False), name='uploads')
 app.include_router(health_router)
 app.include_router(detect_router)
@@ -95,3 +95,157 @@ async def handle_unexpected_exception(_request: Request, exc: Exception):
 @app.get('/')
 def root():
     return {'service': settings.app_name, 'status': 'running'}
+
+
+def _offline_docs_html(page_title: str, heading: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{page_title}</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+      font-family: Arial, Helvetica, sans-serif;
+    }}
+    body {{
+      margin: 0;
+      padding: 24px;
+      background: #0b1020;
+      color: #e5e7eb;
+    }}
+    main {{
+      max-width: 1100px;
+      margin: 0 auto;
+    }}
+    h1, h2, h3 {{
+      margin-bottom: 12px;
+    }}
+    .hint {{
+      color: #cbd5e1;
+      margin-bottom: 16px;
+    }}
+    .card {{
+      background: #111827;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    }}
+    .path {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      word-break: break-all;
+    }}
+    .method {{
+      display: inline-block;
+      min-width: 72px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      margin-right: 8px;
+      font-weight: 700;
+      color: white;
+    }}
+    .get {{ background: #0284c7; }}
+    .post {{ background: #16a34a; }}
+    .put {{ background: #ca8a04; }}
+    .delete {{ background: #dc2626; }}
+    .patch {{ background: #7c3aed; }}
+    a {{
+      color: #93c5fd;
+    }}
+    pre {{
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #020617;
+      border-radius: 8px;
+      padding: 12px;
+      overflow: auto;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{heading}</h1>
+    <p class="hint">
+      This page is served fully from the ai-service process and does not depend on external CDN assets.
+      Open the raw schema at <a href="/openapi.json">/openapi.json</a>.
+    </p>
+    <div id="content" class="card">Loading OpenAPI schema...</div>
+  </main>
+  <script>
+    const content = document.getElementById('content');
+
+    function methodClass(method) {{
+      const normalized = method.toLowerCase();
+      return ['get', 'post', 'put', 'delete', 'patch'].includes(normalized) ? normalized : '';
+    }}
+
+    function renderSchema(schema) {{
+      const sections = [];
+      const paths = schema.paths || {{}};
+      const tagDescriptions = new Map((schema.tags || []).map((tag) => [tag.name, tag.description || '']));
+      const grouped = new Map();
+
+      for (const [path, operations] of Object.entries(paths)) {{
+        for (const [method, operation] of Object.entries(operations)) {{
+          const tags = operation.tags && operation.tags.length ? operation.tags : ['default'];
+          for (const tag of tags) {{
+            if (!grouped.has(tag)) grouped.set(tag, []);
+            grouped.get(tag).push({{ path, method: method.toUpperCase(), operation }});
+          }}
+        }}
+      }}
+
+      if (!grouped.size) {{
+        content.innerHTML = '<p>No API paths were found in the schema.</p>';
+        return;
+      }}
+
+      for (const [tag, items] of grouped.entries()) {{
+        sections.push(`<section class="card"><h2>${{tag}}</h2>${{tagDescriptions.get(tag) ? `<p>${{tagDescriptions.get(tag)}}</p>` : ''}}`);
+        for (const item of items) {{
+          const summary = item.operation.summary || item.operation.description || 'No summary provided.';
+          const requestBody = item.operation.requestBody ? `<details><summary>Request body</summary><pre>${{JSON.stringify(item.operation.requestBody, null, 2)}}</pre></details>` : '';
+          const responses = item.operation.responses ? `<details><summary>Responses</summary><pre>${{JSON.stringify(item.operation.responses, null, 2)}}</pre></details>` : '';
+          sections.push(`
+            <article style="margin-top: 14px;">
+              <div><span class="method ${{methodClass(item.method)}}">${{item.method}}</span><span class="path">${{item.path}}</span></div>
+              <p>${{summary}}</p>
+              ${{requestBody}}
+              ${{responses}}
+            </article>
+          `);
+        }}
+        sections.push('</section>');
+      }}
+
+      content.outerHTML = sections.join('');
+    }}
+
+    fetch('/openapi.json')
+      .then((response) => {{
+        if (!response.ok) {{
+          throw new Error(`Failed to load schema: ${{response.status}}`);
+        }}
+        return response.json();
+      }})
+      .then(renderSchema)
+      .catch((error) => {{
+        content.innerHTML = `<h2>Failed to load schema</h2><pre>${{error.message}}</pre>`;
+      }});
+  </script>
+</body>
+</html>"""
+
+
+@app.get('/docs', include_in_schema=False)
+def offline_docs():
+    return HTMLResponse(_offline_docs_html('AI ID Photo Service - Docs', 'AI ID Photo Service Docs'))
+
+
+@app.get('/redoc', include_in_schema=False)
+def offline_redoc():
+    return HTMLResponse(_offline_docs_html('AI ID Photo Service - ReDoc', 'AI ID Photo Service API Reference'))
