@@ -30,7 +30,7 @@ class GeneratePrintLayoutPipeline:
         )
         if not detect_result.passed:
             error_code, message = self.validation_service.build_generate_error(detect_result.reasons)
-            raise AppException(message, error_code, 400, data=detect_result.to_dict())
+            raise AppException(message, error_code, 400)
         print_url = self.print_service.generate_layout(image_id=image_id, hd_image=hd_image, layout_type=layout_type)
         return {
             'imageId': image_id,

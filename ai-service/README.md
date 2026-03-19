@@ -305,7 +305,10 @@ curl -X POST 'http://127.0.0.1:8000/ai/detect' \
     "faceCount": 1,
     "pass": true,
     "reasons": [],
-    "message": "照片符合证件照制作要求",
+    "message": "图片符合证件照制作要求",
+    "blurScore": 0.87,
+    "imageWidth": 900,
+    "imageHeight": 1200,
     "primaryFaceBox": {
       "x": 120,
       "y": 80,
@@ -328,7 +331,31 @@ curl -X POST 'http://127.0.0.1:8000/ai/detect' \
     "faceCount": 2,
     "pass": false,
     "reasons": ["MULTIPLE_FACES_DETECTED"],
-    "message": "检测到多张人脸，不符合证件照制作要求",
+    "message": "检测到多张人脸，不符合证件照制作要求，请上传单人照片",
+    "blurScore": 0.92,
+    "imageWidth": 1280,
+    "imageHeight": 960,
+    "primaryFaceBox": null
+  }
+}
+```
+
+无人脸图示例：
+
+```json
+{
+  "success": true,
+  "message": "OK",
+  "data": {
+    "imageId": "img_no_face",
+    "hasFace": false,
+    "faceCount": 0,
+    "pass": false,
+    "reasons": ["NO_FACE_DETECTED"],
+    "message": "未检测到人脸，请上传清晰的单人正脸照片",
+    "blurScore": 0.16,
+    "imageWidth": 960,
+    "imageHeight": 960,
     "primaryFaceBox": null
   }
 }
@@ -350,7 +377,7 @@ curl -X POST 'http://127.0.0.1:8000/ai/generate-id-photo' \
   }'
 ```
 
-> 生成前会先执行和 `/ai/detect` 完全一致的准入校验。如果 `pass=false`，接口会直接拒绝继续抠图、换底、裁剪或排版。
+> 生成前会先执行和 `/ai/detect` 完全一致的准入校验。如果 `pass=false`，接口会直接拒绝继续抠图、换底、裁剪或排版，并返回 `success=false`、`errorCode=<首个失败原因>`、`data=null`。
 
 ### 10.4 `POST /ai/generate-print-layout`
 
@@ -378,7 +405,7 @@ curl -X POST 'http://127.0.0.1:8000/ai/detect-upload' \
   -F 'imageId=demo_detect'
 ```
 
-`/ai/detect-upload` 与 `/ai/detect` 使用同一套检测与准入规则，返回字段保持一致：`hasFace`、`faceCount`、`pass`、`reasons`、`message`、`primaryFaceBox`。
+`/ai/detect-upload` 与 `/ai/detect` 使用同一套检测与准入规则，返回字段保持一致：`hasFace`、`faceCount`、`pass`、`reasons`、`message`、`blurScore`、`primaryFaceBox`、`imageWidth`、`imageHeight`。
 
 ### 11.2 `POST /ai/generate-id-photo-upload`
 
@@ -479,28 +506,32 @@ python scripts/test_print_upload.py ./tests/demo.jpg --layout-type eight
 - 单人正面照
 - 头部完整、不被裁切
 - 光线均匀
-- 背景尽量简单
+- 人物主体足够近，人脸区域清晰
 - 分辨率不要太低
 
 尽量避免：
 
 - 多人合照
-- 侧脸过大
+- 无人脸照片
+- 明显侧脸或身体大幅偏转
 - 遮挡严重
 - 头像太小
 - 模糊图
+- 分辨率过低
 
 ### 准入规则说明
 
 - 仅支持**单人正脸照片**。
-- 多人图会返回 `hasFace=true`、`faceCount>1`，但 `pass=false`，并给出 `MULTIPLE_FACES_DETECTED`。
-- 无人脸图会返回 `hasFace=false`、`pass=false`，并给出 `NO_FACE_DETECTED`。
-- 模糊图可能返回 `IMAGE_TOO_BLURRY`。
-- 人脸过小可能返回 `FACE_TOO_SMALL`。
-- 侧脸过大、人物偏转明显可能返回 `POSE_INVALID`。
+- 多人图不支持，会返回 `MULTIPLE_FACES_DETECTED`。
+- 无人脸图不支持，会返回 `NO_FACE_DETECTED`。
+- 过于模糊的图不支持，会返回 `IMAGE_TOO_BLURRY`。
+- 人脸过小的图不支持，会返回 `FACE_TOO_SMALL`。
+- 原图宽高低于最小阈值时会返回 `IMAGE_TOO_SMALL`。
+- 姿态不正、明显侧脸、构图不适合证件照的图可能返回 `POSE_INVALID`。
 - 遮挡严重可能返回 `FACE_OCCLUDED`。
 - 头顶、下巴或左右边缘裁切过重可能返回 `HEAD_CROPPED`。
-- `generate-id-photo` / `generate-id-photo-upload` / `generate-print-layout` / `generate-print-layout-upload` 在输入不合格时会**直接拒绝**，不会继续生成错误结果。
+- `detect` / `detect-upload` 会直接返回 `pass` / `reasons` / `message`，用于区分“检测到人脸”和“符合证件照制作要求”。
+- `generate-id-photo` / `generate-id-photo-upload` / `generate-print-layout` / `generate-print-layout-upload` 在输入不合格时会**直接拒绝**，返回 `success=false`、`errorCode` 和提示文案，而不是继续生成。
 
 > 当前裁剪逻辑已经增强：优先参考检测到的人脸框，尽量保留头顶留白、让脸部占比更接近常见证件照；如果没有检测框，会自动回退到原有中心裁剪策略。
 
@@ -546,7 +577,7 @@ python scripts/test_print_upload.py ./tests/demo.jpg --layout-type eight
 
 ### 10) `IMAGE_TOO_SMALL`
 
-说明输出分辨率过低，建议上传更高分辨率原图。
+说明输入图片分辨率过低，未达到证件照准入要求。建议上传更高分辨率原图。
 
 ### 11) `PROCESS_FAILED`
 

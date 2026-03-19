@@ -51,7 +51,7 @@ class GenerateIdPhotoPipeline:
         detect_result = self.detect_service.detect(image_id=image_id, image_path=original_image_path)
         if not detect_result.passed:
             error_code, message = self.validation_service.build_generate_error(detect_result.reasons)
-            raise AppException(message, error_code, 400, data=detect_result.to_dict())
+            raise AppException(message, error_code, 400)
 
         size_tpl = self._resolve_template(
             source_type=payload['sourceType'],

@@ -17,10 +17,12 @@ class DetectOutcome:
     faceCount: int
     passed: bool
     reasons: list[str]
-    blurScore: float
+    blurScore: float | None
     poseValid: bool
     occlusionDetected: bool
     message: str
+    imageWidth: int
+    imageHeight: int
     primaryFaceBox: dict | None = None
 
     def to_dict(self) -> dict:
@@ -74,9 +76,11 @@ class DetectService:
             faceCount=face_count,
             passed=validation.passed,
             reasons=validation.reasons,
-            blurScore=blur_score,
+            blurScore=validation.blurScore,
             poseValid=pose_valid,
             occlusionDetected=occlusion_detected,
             message=validation.message,
             primaryFaceBox=validation.primaryFaceBox,
+            imageWidth=validation.imageWidth,
+            imageHeight=validation.imageHeight,
         )

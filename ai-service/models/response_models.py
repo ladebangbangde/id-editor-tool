@@ -16,10 +16,12 @@ class DetectResult(BaseModel):
     faceCount: int
     pass_: bool = Field(alias='pass')
     reasons: list[str]
-    blurScore: float
+    blurScore: Optional[float] = None
     poseValid: bool
     occlusionDetected: bool
     message: str
+    imageWidth: int
+    imageHeight: int
     primaryFaceBox: Optional[dict] = None
 
 
