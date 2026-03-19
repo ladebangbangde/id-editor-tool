@@ -7,11 +7,11 @@ from core.exceptions import (
     ERROR_FACE_TOO_SMALL,
     ERROR_HEAD_CROPPED,
     ERROR_IMAGE_TOO_BLURRY,
-    ERROR_IMAGE_TOO_SMALL,
     ERROR_MULTIPLE_FACES_DETECTED,
     ERROR_NO_FACE_DETECTED,
     ERROR_POSE_INVALID,
 )
+from services.face_postprocess_service import FacePostprocessService
 from services.quality_service import QualityService
 
 
@@ -20,12 +20,11 @@ class ValidationOutcome:
     hasFace: bool
     faceCount: int
     passed: bool
-    blurScore: float | None
-    imageWidth: int
-    imageHeight: int
     reasons: list[str] = field(default_factory=list)
     message: str = '未检测到有效人脸'
     primaryFaceBox: dict | None = None
+    rawFaceCount: int = 0
+    filteredOutReasons: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -34,10 +33,7 @@ class ValidationOutcome:
             'pass': self.passed,
             'reasons': self.reasons,
             'message': self.message,
-            'blurScore': self.blurScore,
             'primaryFaceBox': self.primaryFaceBox,
-            'imageWidth': self.imageWidth,
-            'imageHeight': self.imageHeight,
         }
 
 
@@ -48,65 +44,48 @@ class ValidationService:
         ERROR_IMAGE_TOO_BLURRY,
         ERROR_FACE_TOO_SMALL,
         ERROR_POSE_INVALID,
-        ERROR_IMAGE_TOO_SMALL,
         ERROR_FACE_OCCLUDED,
         ERROR_HEAD_CROPPED,
     ]
 
     detect_messages = {
-        ERROR_NO_FACE_DETECTED: '未检测到人脸，请上传清晰的单人正脸照片',
-        ERROR_MULTIPLE_FACES_DETECTED: '检测到多张人脸，不符合证件照制作要求，请上传单人照片',
-        ERROR_IMAGE_TOO_BLURRY: '图片过于模糊，请上传更清晰的照片',
-        ERROR_FACE_TOO_SMALL: '人脸区域过小，请上传人物更近、更清晰的照片',
-        ERROR_POSE_INVALID: '人物姿态不符合要求，请上传正脸且身体基本正对镜头的照片',
-        ERROR_IMAGE_TOO_SMALL: '图片分辨率过低，请上传更高分辨率照片',
-        ERROR_FACE_OCCLUDED: '人脸存在明显遮挡，请上传无遮挡的正脸照片',
-        ERROR_HEAD_CROPPED: '头部截断过于严重，请上传头部完整的正脸照片',
+        ERROR_NO_FACE_DETECTED: '未检测到人脸',
+        ERROR_MULTIPLE_FACES_DETECTED: '检测到多张人脸，不符合证件照制作要求',
+        ERROR_IMAGE_TOO_BLURRY: '图片过于模糊，不符合证件照制作要求',
+        ERROR_FACE_TOO_SMALL: '人脸区域过小，不符合证件照制作要求',
+        ERROR_POSE_INVALID: '人脸姿态不符合证件照要求',
+        ERROR_FACE_OCCLUDED: '人脸存在严重遮挡，不符合证件照制作要求',
+        ERROR_HEAD_CROPPED: '头部截断过于严重，不符合证件照制作要求',
     }
 
     generate_messages = {
         ERROR_NO_FACE_DETECTED: '未检测到有效人脸，请上传清晰的单人正脸照片',
         ERROR_MULTIPLE_FACES_DETECTED: '检测到多张人脸，请上传单人正脸照片',
         ERROR_IMAGE_TOO_BLURRY: '图片过于模糊，请上传清晰照片',
-        ERROR_FACE_TOO_SMALL: '人脸区域过小，请上传人物更近、更清晰的照片',
-        ERROR_POSE_INVALID: '人物姿态不符合要求，请上传正脸且身体基本正对镜头的照片',
-        ERROR_IMAGE_TOO_SMALL: '图片分辨率过低，请上传更高分辨率照片',
-        ERROR_FACE_OCCLUDED: '人脸存在明显遮挡，请上传无遮挡的单人正脸照片',
+        ERROR_FACE_TOO_SMALL: '人脸区域过小，请上传人物主体更清晰的单人正脸照片',
+        ERROR_POSE_INVALID: '人脸姿态不符合要求，请上传单人正脸照片',
+        ERROR_FACE_OCCLUDED: '人脸遮挡过于严重，请上传无遮挡的单人正脸照片',
         ERROR_HEAD_CROPPED: '头部截断过于严重，请上传头部完整的单人正脸照片',
     }
 
     def __init__(self):
         self.quality_service = QualityService()
-
-    @staticmethod
-    def _build_primary_face_box(faces) -> dict | None:
-        if len(faces) != 1:
-            return None
-        face = faces[0]
-        return {
-            'x': int(face['c']),
-            'y': int(face['r']),
-            'width': int(face['width']),
-            'height': int(face['height']),
-        }
+        self.face_postprocess_service = FacePostprocessService()
 
     def _build_message(self, reasons: list[str], passed: bool, for_generate: bool = False) -> str:
         if passed:
-            return '图片符合证件照制作要求'
+            return '照片符合证件照制作要求'
         if not reasons:
             return '图片不符合证件照制作要求'
         mapping = self.generate_messages if for_generate else self.detect_messages
         return mapping.get(reasons[0], '图片不符合证件照制作要求')
 
-    def validate(self, image_shape: tuple[int, ...], faces, blur_score: float | None) -> ValidationOutcome:
-        image_height, image_width = image_shape[:2]
-        face_count = len(faces)
+    def validate(self, image_shape: tuple[int, ...], faces, blur_score: float) -> ValidationOutcome:
+        postprocess_result = self.face_postprocess_service.face_box_postprocess(faces)
+        face_count = len(postprocess_result.validFaces)
         has_face = face_count > 0
-        primary_face_box = self._build_primary_face_box(faces)
+        primary_face_box = postprocess_result.primaryFaceBox
         reasons: list[str] = []
-
-        if self.quality_service.is_image_too_small(image_shape):
-            reasons.append(ERROR_IMAGE_TOO_SMALL)
 
         if face_count == 0:
             reasons.append(ERROR_NO_FACE_DETECTED)
@@ -131,12 +110,11 @@ class ValidationService:
             hasFace=has_face,
             faceCount=face_count,
             passed=passed,
-            blurScore=blur_score,
             reasons=ordered_reasons,
             message=message,
             primaryFaceBox=primary_face_box,
-            imageWidth=image_width,
-            imageHeight=image_height,
+            rawFaceCount=postprocess_result.rawFaceCount,
+            filteredOutReasons=postprocess_result.filteredOutReasons,
         )
 
     def build_generate_error(self, reasons: list[str]) -> tuple[str, str]:

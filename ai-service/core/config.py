@@ -29,18 +29,10 @@ class Settings(BaseSettings):
     hd_quality: int = Field(default=95, validation_alias=AliasChoices('HD_QUALITY'))
     jpeg_dpi: int = Field(default=300, validation_alias=AliasChoices('JPEG_DPI'))
 
-    blur_threshold: float = Field(default=0.35, validation_alias=AliasChoices('BLUR_THRESHOLD'))
-    min_image_width: int = Field(default=400, validation_alias=AliasChoices('MIN_IMAGE_WIDTH'))
-    min_image_height: int = Field(default=400, validation_alias=AliasChoices('MIN_IMAGE_HEIGHT'))
-    min_face_width: int = Field(default=120, validation_alias=AliasChoices('MIN_FACE_WIDTH'))
-    min_face_height: int = Field(default=120, validation_alias=AliasChoices('MIN_FACE_HEIGHT'))
-    min_face_area_ratio: float = Field(default=0.025, validation_alias=AliasChoices('MIN_FACE_AREA_RATIO'))
-    min_face_height_ratio: float = Field(default=0.18, validation_alias=AliasChoices('MIN_FACE_HEIGHT_RATIO'))
-    max_face_center_offset_ratio: float = Field(default=0.18, validation_alias=AliasChoices('MAX_FACE_CENTER_OFFSET_RATIO'))
-    min_face_aspect_ratio: float = Field(default=0.72, validation_alias=AliasChoices('MIN_FACE_ASPECT_RATIO'))
-    max_face_aspect_ratio: float = Field(default=1.38, validation_alias=AliasChoices('MAX_FACE_ASPECT_RATIO'))
-    occluded_face_aspect_ratio: float = Field(default=0.62, validation_alias=AliasChoices('OCCLUDED_FACE_ASPECT_RATIO'))
-    edge_touch_ratio: float = Field(default=0.02, validation_alias=AliasChoices('EDGE_TOUCH_RATIO'))
+    min_valid_face_width: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_WIDTH'))
+    min_valid_face_height: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_HEIGHT'))
+    multi_face_min_area_ratio: float = Field(default=0.25, validation_alias=AliasChoices('MULTI_FACE_MIN_AREA_RATIO'))
+    face_box_iou_threshold: float = Field(default=0.35, validation_alias=AliasChoices('FACE_BOX_IOU_THRESHOLD'))
 
     static_mount_path: str = '/uploads'
 
