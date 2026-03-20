@@ -106,6 +106,9 @@ class GenerateResultModel(BaseModel):
     pixelHeight: int
     qualityStatus: str
     qualityMessage: str
+    sourceResolutionTooLow: bool | None = None
+    outputSizeIsStandard: bool | None = None
+    likelyUpscaled: bool | None = None
     cropBox: dict[str, int]
     targetWidth: int
     targetHeight: int

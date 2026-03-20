@@ -108,7 +108,15 @@ class GenerateIdPhotoPipeline:
         save_pil_image(enhanced, hd_output_path, quality=self.settings.hd_quality, dpi=self.settings.jpeg_dpi)
 
         preview_result = self.preview_builder.build_preview(image_id=image_id, hd_image=enhanced)
-        quality_details = self.quality_service.evaluate_details(enhanced)
+        source_width = getattr(detect_result, 'imageWidth', enhanced.size[0])
+        source_height = getattr(detect_result, 'imageHeight', enhanced.size[1])
+        quality_details = self.quality_service.evaluate_details(
+            enhanced,
+            source_size=(source_width, source_height),
+            expected_output_size=(size_tpl.pixelWidth, size_tpl.pixelHeight),
+            face_box=detect_result.primaryFaceBox,
+            blur_score=getattr(detect_result, 'blurScore', None),
+        )
 
         print_result = None
         layout_type = payload.get('printLayoutType')
@@ -136,6 +144,9 @@ class GenerateIdPhotoPipeline:
             'pixelHeight': size_tpl.pixelHeight,
             'qualityStatus': quality_details['qualityStatus'],
             'qualityMessage': quality_details['qualityMessage'],
+            'sourceResolutionTooLow': quality_details['sourceResolutionTooLow'],
+            'outputSizeIsStandard': quality_details['outputSizeIsStandard'],
+            'likelyUpscaled': quality_details['likelyUpscaled'],
             'cropBox': crop_result.cropBox,
             'targetWidth': crop_result.targetWidth,
             'targetHeight': crop_result.targetHeight,
