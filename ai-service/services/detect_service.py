@@ -7,6 +7,7 @@ import cv2
 from core.exceptions import ERROR_FACE_OCCLUDED, ERROR_POSE_INVALID
 from services.quality_service import QualityService
 from services.validation_service import LoadedImage, ValidationOutcome, ValidationService
+from utils.logger import get_logger
 
 
 @dataclass
@@ -52,6 +53,7 @@ class DetectService:
         self.face_detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
+        self.logger = get_logger(component='detect_service')
 
     @staticmethod
     def _calc_blur_score(image_bgr) -> float:
@@ -85,11 +87,19 @@ class DetectService:
         return validation_result.message
 
     def detect_from_loaded_image(self, image_id: str, loaded_image: LoadedImage) -> DetectOutcome:
+        detect_logger = self.logger.bind(
+            image_id=image_id,
+            image_width=loaded_image.width,
+            image_height=loaded_image.height,
+            image_format=loaded_image.format,
+        )
+        detect_logger.info('starting face detection')
         image_bgr = cv2.cvtColor(loaded_image.image_np, cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
         faces = self.face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
         normalized_faces = self._normalize_faces(faces)
         blur_score = self._calc_blur_score(image_bgr)
+        detect_logger.bind(raw_face_count=len(normalized_faces), blur_score=blur_score).debug('opencv face detection finished')
         validation_result: ValidationOutcome = self.validation_service.validate(
             image_shape=image_bgr.shape,
             faces=normalized_faces,
@@ -104,7 +114,7 @@ class DetectService:
         else:
             message = '未检测到稳定可处理人像，请上传单人正脸照片'
 
-        return DetectOutcome(
+        outcome = DetectOutcome(
             imageId=image_id,
             faceDetected=validation_result.hasFace,
             faceCount=validation_result.faceCount,
@@ -125,11 +135,20 @@ class DetectService:
             message=message,
             primaryFaceBox=validation_result.primaryFaceBox,
         )
+        detect_logger.bind(
+            face_detected=outcome.faceDetected,
+            face_count=outcome.faceCount,
+            validation_passed=outcome.validationPassed,
+            reasons=','.join(outcome.reasons) if outcome.reasons else 'none',
+        ).info('face detection completed')
+        return outcome
 
     def detect(self, image_id: str, image_path: str) -> DetectOutcome:
         import numpy as np
         from PIL import Image
 
+        detect_logger = self.logger.bind(image_id=image_id, image_path=image_path)
+        detect_logger.debug('loading image for detection')
         image = Image.open(image_path)
         rgb = image.convert('RGB')
         loaded = LoadedImage(
