@@ -5,6 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.config_api import router as config_router
 from api.detect_api import router as detect_router
 from api.generate_api import router as generate_router
 from api.health_api import router as health_router
@@ -28,6 +29,7 @@ app = FastAPI(
     openapi_url=settings.openapi_url,
 )
 app.include_router(health_router)
+app.include_router(config_router)
 app.include_router(detect_router)
 app.include_router(generate_router)
 app.include_router(print_router)

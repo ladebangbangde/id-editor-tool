@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, File, Form, UploadFile
 
 from models.request_models import GenerateIdPhotoRequest
-from models.response_models import DetectResponse, GenericDataResponse
+from models.response_models import DetectResponse, GenerateResponse, PrintLayoutResponse
 from pipeline.generate_id_photo import GenerateIdPhotoPipeline
 from pipeline.generate_print_layout import GeneratePrintLayoutPipeline
 from services.detect_service import DetectService
@@ -20,7 +20,7 @@ generate_pipeline = GenerateIdPhotoPipeline()
 print_pipeline = GeneratePrintLayoutPipeline()
 
 
-@router.post('/ai/detect-upload', response_model=DetectResponse)
+@router.post('/ai/detect-upload', response_model=DetectResponse, summary='Debug only: upload file and reuse detect pipeline')
 async def detect_upload(
     file: UploadFile = File(...),
     imageId: str | None = Form(default=None),
@@ -32,7 +32,7 @@ async def detect_upload(
     return success_response(result, message='OK')
 
 
-@router.post('/ai/generate-id-photo-upload', response_model=GenericDataResponse)
+@router.post('/ai/generate-id-photo-upload', response_model=GenerateResponse, summary='Debug only: upload file and generate ID photo')
 async def generate_id_photo_upload(
     file: UploadFile = File(...),
     imageId: str | None = Form(default=None),
@@ -61,7 +61,7 @@ async def generate_id_photo_upload(
     return success_response(result, message='Generate success')
 
 
-@router.post('/ai/generate-print-layout-upload', response_model=GenericDataResponse)
+@router.post('/ai/generate-print-layout-upload', response_model=PrintLayoutResponse, summary='Debug only: upload file, generate HD photo, then print layout')
 async def generate_print_layout_upload(
     file: UploadFile = File(...),
     imageId: str | None = Form(default=None),
