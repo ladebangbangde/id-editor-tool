@@ -191,7 +191,46 @@ curl http://127.0.0.1:8000/ai/photo-sizes
 
 ---
 
-## 6. 正式接口说明（给 server 调用）
+## 6. server 对接稳定接口（推荐 `id-editor-server` 使用）
+
+推荐 server 侧优先对接以下稳定 HTTP 接口：
+
+- `GET /health`：健康检查
+- `GET /api/v1/specs`：读取底色、尺寸、输出格式等规格信息
+- `POST /api/v1/process`：统一上传并生成证件照
+
+其中 `POST /api/v1/process` 使用 `multipart/form-data`，至少支持：
+
+- `file`
+- `sizeCode`
+- `backgroundColor`
+- `outputFormat`
+- `beautyEnabled`
+- `printLayoutType`
+
+返回统一采用：
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {}
+}
+```
+
+失败时：
+
+```json
+{
+  "code": 1006,
+  "message": "请求参数不合法",
+  "data": null
+}
+```
+
+---
+
+## 7. 正式接口说明（给 server 调用）
 
 ### 6.1 `GET /ai/health`
 
@@ -310,9 +349,9 @@ curl -X POST http://127.0.0.1:8000/ai/generate-print-layout \
 
 ---
 
-## 7. upload-debug 接口说明（仅用于本地调试）
+## 8. upload-debug 接口说明（仅用于本地调试）
 
-### 7.1 `POST /ai/detect-upload`
+### 8.1 `POST /ai/detect-upload`
 
 上传原图后自动保存到 `uploads/original/`，再复用正式检测链路。
 
@@ -329,7 +368,7 @@ curl -X POST http://127.0.0.1:8000/ai/detect-upload \
 python scripts/test_detect_upload.py ./test.jpg
 ```
 
-### 7.2 `POST /ai/generate-id-photo-upload`
+### 8.2 `POST /ai/generate-id-photo-upload`
 
 上传原图并直接生成证件照。
 
@@ -360,7 +399,7 @@ curl -X POST http://127.0.0.1:8000/ai/generate-id-photo-upload \
 python scripts/test_generate_upload.py ./test.jpg --background-color blue --size-name one_inch
 ```
 
-### 7.3 `POST /ai/generate-print-layout-upload`
+### 8.3 `POST /ai/generate-print-layout-upload`
 
 上传原图后先走证件照生成，再继续生成排版图。
 
@@ -382,7 +421,7 @@ python scripts/test_print_upload.py ./test.jpg --layout-type six --size-name one
 
 ---
 
-## 8. 生成结果如何通过浏览器访问
+## 9. 生成结果如何通过浏览器访问
 
 服务启动后会把 `uploads` 挂载为静态目录，因此以下路径可以在浏览器中直接打开：
 
@@ -419,7 +458,7 @@ http://127.0.0.1:8000/uploads/preview/test001_preview.jpg
 
 ---
 
-## 9. 本地启动
+## 10. 本地启动
 
 ```bash
 cd ai-service
@@ -437,16 +476,16 @@ uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 
 ---
 
-## 10. 本地验证步骤
+## 11. 本地验证步骤
 
-### 10.1 验证只读配置接口
+### 11.1 验证只读配置接口
 
 ```bash
 curl http://127.0.0.1:8000/ai/colors
 curl http://127.0.0.1:8000/ai/photo-sizes
 ```
 
-### 10.2 验证正式 detect 接口
+### 11.2 验证正式 detect 接口
 
 先准备一张图片到：
 
@@ -462,25 +501,25 @@ curl -X POST http://127.0.0.1:8000/ai/detect \
   -d '{"imageId":"demo001","originalImagePath":"uploads/original/test.jpg"}'
 ```
 
-### 10.3 验证 upload-debug 检测接口
+### 11.3 验证 upload-debug 检测接口
 
 ```bash
 python scripts/test_detect_upload.py ./test.jpg
 ```
 
-### 10.4 验证 upload-debug 证件照生成接口
+### 11.4 验证 upload-debug 证件照生成接口
 
 ```bash
 python scripts/test_generate_upload.py ./test.jpg --background-color red --size-name passport
 ```
 
-### 10.5 验证 upload-debug 排版接口
+### 11.5 验证 upload-debug 排版接口
 
 ```bash
 python scripts/test_print_upload.py ./test.jpg --layout-type six --size-name one_inch
 ```
 
-### 10.6 浏览器查看生成文件
+### 11.6 浏览器查看生成文件
 
 把返回中的 `previewUrl`、`hdUrl`、`printUrl` 拼到本地地址即可，例如：
 
@@ -490,7 +529,7 @@ http://127.0.0.1:8000/uploads/print/demo001_print_6.jpg
 
 ---
 
-## 11. 说明
+## 12. 说明
 
 这一轮是“第二阶段增量增强”，不是重写：
 

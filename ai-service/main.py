@@ -13,12 +13,14 @@ from api.detect_api import router as detect_router
 from api.generate_api import router as generate_router
 from api.health_api import router as health_router
 from api.print_api import router as print_router
+from api.tool_api import router as tool_router
 from api.upload_debug_api import router as upload_debug_router
 from core.exceptions import AppException, ERROR_INVALID_ARGUMENT, ERROR_PROCESS_FAILED
-from models.response_models import ErrorResponse, RootResponse
+from models.response_models import ErrorResponse, RootResponse, ToolErrorResponse
 from utils.config import get_settings
 from utils.file_utils import ensure_upload_dirs
 from utils.logger import get_logger, init_logger
+from utils.response_utils import is_tool_v1_path, map_tool_error_code, tool_error_response
 
 init_logger()
 logger = get_logger(component='main')
@@ -37,6 +39,7 @@ app.include_router(detect_router)
 app.include_router(generate_router)
 app.include_router(print_router)
 app.include_router(upload_debug_router)
+app.include_router(tool_router)
 
 ensure_upload_dirs()
 app.mount(settings.static_mount_path, StaticFiles(directory=str(settings.upload_root_path)), name='uploads')
@@ -80,6 +83,9 @@ async def request_logging_middleware(request: Request, call_next):
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     request_logger = getattr(request.state, 'request_logger', logger)
     request_logger.bind(error_code=exc.error_code, status_code=exc.status_code).warning('application error: {}', exc.message)
+    if is_tool_v1_path(request.url.path):
+        payload = ToolErrorResponse(**tool_error_response(exc.message, exc.error_code, exc.data))
+        return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
     payload = ErrorResponse(message=exc.message, errorCode=exc.error_code, data=exc.data)
     return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
 
@@ -88,6 +94,9 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     request_logger = getattr(request.state, 'request_logger', logger)
     request_logger.bind(status_code=422).warning('request validation error: {}', exc.errors())
+    if is_tool_v1_path(request.url.path):
+        payload = ToolErrorResponse(**tool_error_response('请求参数不合法', ERROR_INVALID_ARGUMENT, {'details': exc.errors()}))
+        return JSONResponse(status_code=422, content=payload.model_dump())
     payload = ErrorResponse(
         message='请求参数不合法',
         errorCode=ERROR_INVALID_ARGUMENT,
@@ -100,6 +109,9 @@ async def request_validation_exception_handler(request: Request, exc: RequestVal
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     request_logger = getattr(request.state, 'request_logger', logger)
     request_logger.exception('unhandled error: {}', exc)
+    if is_tool_v1_path(request.url.path):
+        payload = ToolErrorResponse(code=map_tool_error_code(ERROR_PROCESS_FAILED), message='服务内部错误', data=None)
+        return JSONResponse(status_code=500, content=payload.model_dump())
     payload = ErrorResponse(message='服务内部处理失败，请稍后重试', errorCode=ERROR_PROCESS_FAILED)
     return JSONResponse(status_code=500, content=payload.model_dump())
 

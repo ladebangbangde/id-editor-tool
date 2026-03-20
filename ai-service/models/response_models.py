@@ -27,6 +27,16 @@ class ErrorResponse(ApiResponse[dict]):
     success: bool = False
 
 
+class ToolApiResponse(BaseModel, Generic[T]):
+    code: int = 0
+    message: str = 'success'
+    data: T | None = None
+
+
+class ToolErrorResponse(ToolApiResponse[dict]):
+    code: int = 9001
+
+
 class HealthPayload(BaseModel):
     service: str
     status: str
@@ -139,6 +149,37 @@ class PrintLayoutResultModel(BaseModel):
     photoCount: int
 
 
+class ToolSpecsPayload(BaseModel):
+    backgroundColors: list[str]
+    backgroundColorOptions: list[BackgroundColorPayload]
+    sizeCodes: list[str]
+    photoSizes: list[PhotoSizePayload]
+    outputFormats: list[str]
+    legacyEndpoints: list[str]
+    stableEndpoints: list[str]
+
+
+class ToolProcessResultModel(BaseModel):
+    imageId: str
+    resultPath: str
+    resultUrl: str
+    previewPath: str
+    previewUrl: str
+    printPath: str | None = None
+    printUrl: str | None = None
+    sizeCode: str
+    backgroundColor: str
+    outputFormat: str
+    width: int
+    height: int
+    qualityStatus: str
+    qualityMessage: str
+    canDirectlyUseForRegistration: bool
+    whetherFallbackUsed: bool
+    segmentationSucceeded: bool
+    processNotes: list[str]
+
+
 class HealthResponse(ApiResponse[HealthPayload]):
     pass
 
@@ -160,6 +201,14 @@ class ColorListResponse(ApiResponse[list[BackgroundColorPayload]]):
 
 
 class PhotoSizeListResponse(ApiResponse[list[PhotoSizePayload]]):
+    pass
+
+
+class ToolSpecsResponse(ToolApiResponse[ToolSpecsPayload]):
+    pass
+
+
+class ToolProcessResponse(ToolApiResponse[ToolProcessResultModel]):
     pass
 
 
