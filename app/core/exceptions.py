@@ -24,13 +24,13 @@ class InvalidImageError(AppError):
 
 
 class NoFaceDetectedError(AppError):
-    def __init__(self, message: str = 'No face detected in the uploaded image'):
-        super().__init__('NO_FACE_DETECTED', message, 422)
+    def __init__(self, message: str = 'No face detected in the uploaded image', details: Any = None):
+        super().__init__('NO_FACE_DETECTED', message, 422, details)
 
 
 class MultipleFacesDetectedError(AppError):
-    def __init__(self, message: str = 'Multiple faces detected in the uploaded image'):
-        super().__init__('MULTIPLE_FACES_DETECTED', message, 422)
+    def __init__(self, message: str = 'Multiple faces detected in the uploaded image', details: Any = None):
+        super().__init__('MULTIPLE_FACES_DETECTED', message, 422, details)
 
 
 class ImageTooSmallError(AppError):

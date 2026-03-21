@@ -30,7 +30,9 @@ class FaceDetectionResult:
     recommended: bool
     can_generate: bool
     status: str
+    result_level: str
     reasons: list[str]
+    suggestions: list[str]
     reason_codes: list[str]
     warnings: list[str]
     warning_codes: list[str]
@@ -47,6 +49,25 @@ class FaceDetectionResult:
 
 
 class FaceDetectionService:
+    FAILED_REASON_LABELS = {
+        'NO_FACE_DETECTED': '未检测到可用正脸',
+        'MULTIPLE_FACES_DETECTED': '画面中存在多张人脸',
+        'FACE_OCCLUDED': '面部关键区域被遮挡',
+        'EYE_OCCLUDED': '单眼或双眼被遮挡',
+        'INVALID_POSE': '非标准正脸姿态',
+        'LANDMARK_UNSTABLE': '关键点检测不稳定',
+        'BAD_COMPOSITION': '构图不适合证件照裁切',
+    }
+    SUGGESTIONS_BY_CODE = {
+        'NO_FACE_DETECTED': ['请正对镜头拍摄', '请让人脸位于画面中央并保留完整头部'],
+        'MULTIPLE_FACES_DETECTED': ['请仅保留一位拍摄对象', '请让人脸位于画面中央并保留完整头部'],
+        'FACE_OCCLUDED': ['请露出完整双眼与面部', '请避免手、头发遮挡五官'],
+        'EYE_OCCLUDED': ['请露出完整双眼与面部', '请避免手、头发遮挡五官'],
+        'INVALID_POSE': ['请正对镜头拍摄'],
+        'LANDMARK_UNSTABLE': ['请正对镜头拍摄', '请让人脸位于画面中央并保留完整头部'],
+        'BAD_COMPOSITION': ['请让人脸位于画面中央并保留完整头部'],
+    }
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self.detector = Cascade(data.lbp_frontal_face_cascade_filename())
@@ -92,6 +113,24 @@ class FaceDetectionService:
     @staticmethod
     def _laplacian_variance(gray: np.ndarray) -> float:
         return float(np.var(filters.laplace(gray)))
+
+    def _build_failed_reasons_and_suggestions(self, failed_issues: list[DetectionIssue]) -> tuple[list[str], list[str]]:
+        reasons: list[str] = []
+        suggestions: list[str] = []
+        seen_reasons: set[str] = set()
+        seen_suggestions: set[str] = set()
+
+        for issue in failed_issues:
+            reason = self.FAILED_REASON_LABELS.get(issue.code, issue.message)
+            if reason not in seen_reasons:
+                reasons.append(reason)
+                seen_reasons.add(reason)
+            for suggestion in self.SUGGESTIONS_BY_CODE.get(issue.code, []):
+                if suggestion not in seen_suggestions:
+                    suggestions.append(suggestion)
+                    seen_suggestions.add(suggestion)
+
+        return reasons, suggestions
 
     def _prepare_gray(self, image: Image.Image) -> tuple[np.ndarray, float]:
         width, height = image.size
@@ -275,7 +314,7 @@ class FaceDetectionService:
         failed_issues = [issue for issue in issues if issue.severity == FAILED]
         warning_issues = [issue for issue in issues if issue.severity == WARNING]
         status = FAILED if failed_issues else WARNING if warning_issues else PASSED
-        reasons = [issue.message for issue in failed_issues]
+        reasons, suggestions = self._build_failed_reasons_and_suggestions(failed_issues)
         reason_codes = [issue.code for issue in failed_issues]
         warnings = [issue.message for issue in warning_issues]
         warning_codes = [issue.code for issue in warning_issues]
@@ -290,7 +329,9 @@ class FaceDetectionService:
             recommended=status == PASSED,
             can_generate=status != FAILED,
             status=status,
+            result_level=status,
             reasons=reasons,
+            suggestions=suggestions,
             reason_codes=reason_codes,
             warnings=warnings,
             warning_codes=warning_codes,

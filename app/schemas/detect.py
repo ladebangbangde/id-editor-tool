@@ -21,8 +21,10 @@ class DetectData(BaseModel):
     pass_: bool = Field(alias='pass')
     recommended: bool
     status: Literal['PASSED', 'WARNING', 'FAILED']
+    resultLevel: Literal['PASSED', 'WARNING', 'FAILED']
     canGenerate: bool
     reasons: List[str]
+    suggestions: List[str] = Field(default_factory=list)
     reasonCodes: List[str]
     warnings: List[str]
     warningCodes: List[str]

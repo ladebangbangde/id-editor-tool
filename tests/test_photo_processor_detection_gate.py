@@ -15,7 +15,9 @@ def build_result(*, status: str, can_generate: bool, recommended: bool, reasons=
         recommended=recommended,
         can_generate=can_generate,
         status=status,
+        result_level=status,
         reasons=reasons or [],
+        suggestions=['请露出完整双眼与面部'] if reason_codes else [],
         reason_codes=reason_codes or [],
         warnings=warnings or [],
         warning_codes=warning_codes or [],
@@ -56,8 +58,10 @@ def test_build_detect_data_includes_usability_fields(processor: PhotoProcessor) 
     payload = processor._build_detect_data(result)
 
     assert payload.status == 'WARNING'
+    assert payload.resultLevel == 'WARNING'
     assert payload.canGenerate is True
     assert payload.pass_ is True
+    assert payload.suggestions == []
     assert payload.warningCodes == ['BAD_COMPOSITION']
     assert payload.compositionAccepted is False
     assert payload.warning == '人脸位置略偏，后续裁切存在一定风险'
@@ -69,11 +73,11 @@ def test_generate_blocks_failed_source_image_before_pipeline(processor: PhotoPro
         status=FAILED,
         can_generate=False,
         recommended=False,
-        reasons=['双眼或单眼存在明显遮挡，无法满足证件照要求'],
+        reasons=['双眼或单眼被遮挡'],
         reason_codes=['EYE_OCCLUDED'],
     )
 
-    with pytest.raises(EyeOccludedError):
+    with pytest.raises(EyeOccludedError) as exc_info:
         processor.generate(
             image=image,
             size_key='one_inch',
@@ -81,3 +85,7 @@ def test_generate_blocks_failed_source_image_before_pipeline(processor: PhotoPro
             enhance=False,
             save_output=False,
         )
+
+    assert exc_info.value.details['resultLevel'] == 'FAILED'
+    assert exc_info.value.details['reasons'] == ['双眼或单眼被遮挡']
+    assert exc_info.value.details['suggestions'] == ['请露出完整双眼与面部']

@@ -70,8 +70,10 @@ class PhotoProcessor:
             height=result.height,
             pass_=result.can_generate,
             status=result.status,
+            resultLevel=result.result_level,
             canGenerate=result.can_generate,
             reasons=result.reasons,
+            suggestions=result.suggestions,
             reasonCodes=result.reason_codes,
             warnings=result.warnings,
             warningCodes=result.warning_codes,
@@ -101,11 +103,12 @@ class PhotoProcessor:
     def _raise_detect_failure(self, detect_result: FaceDetectionResult) -> None:
         details = self._build_detect_data(detect_result).model_dump(by_alias=True)
         code = detect_result.reason_codes[0] if detect_result.reason_codes else 'NO_FACE_DETECTED'
-        message = detect_result.reasons[0] if detect_result.reasons else 'Source image is not suitable for ID photo generation'
+        failed_messages = [issue.message for issue in detect_result.issues if issue.severity == 'FAILED']
+        message = failed_messages[0] if failed_messages else 'Source image is not suitable for ID photo generation'
         if code == 'NO_FACE_DETECTED':
-            raise NoFaceDetectedError(message)
+            raise NoFaceDetectedError(message, details)
         if code == 'MULTIPLE_FACES_DETECTED':
-            raise MultipleFacesDetectedError(message)
+            raise MultipleFacesDetectedError(message, details)
         if code == 'EYE_OCCLUDED':
             raise EyeOccludedError(message, details)
         if code == 'FACE_OCCLUDED':
@@ -143,10 +146,6 @@ class PhotoProcessor:
         logger.info('Start generate pipeline size=%s background=%s enhance=%s', size_key, background_color, enhance)
         spec = get_photo_spec(size_key)
         detect_result = self.detector.detect(image)
-        if detect_result.face_count == 0:
-            raise NoFaceDetectedError()
-        if detect_result.face_count > 1:
-            raise MultipleFacesDetectedError()
         if not detect_result.can_generate:
             logger.info('Generate blocked by detect gatekeeper status=%s reasons=%s', detect_result.status, detect_result.reason_codes)
             self._raise_detect_failure(detect_result)
