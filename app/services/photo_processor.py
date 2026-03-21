@@ -1,3 +1,4 @@
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -224,7 +225,9 @@ class PhotoProcessor:
             source_hd_path = self.storage.temp_path(task_id, 'source_id_photo.png')
             if save_output:
                 save_image(photo.convert('RGB'), source_hd_path)
-            source_hd_info = self._file_info(source_hd_path)
+                source_hd_info = self._file_info(source_hd_path)
+            else:
+                source_hd_info = FileInfo(path='', url='')
             hd_image = photo.convert('RGB')
         else:
             if image is not None:
@@ -267,3 +270,8 @@ class PhotoProcessor:
             warnings=warnings,
             sourceHd=source_hd_info,
         )
+
+
+@lru_cache(maxsize=1)
+def get_photo_processor() -> PhotoProcessor:
+    return PhotoProcessor()
