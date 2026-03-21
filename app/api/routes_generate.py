@@ -1,5 +1,3 @@
-from typing import Annotated
-
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.core.exceptions import InvalidArgumentError
@@ -13,13 +11,13 @@ processor = PhotoProcessor()
 
 @router.post('/generate', response_model=ApiResponse[GenerateData])
 async def generate(
-    file: Annotated[UploadFile | None, File(default=None)] = None,
-    imagePath: Annotated[str | None, Form(default=None)] = None,
-    sceneId: Annotated[str | None, Form(default=None)] = None,
-    sizeKey: Annotated[str | None, Form(default=None)] = None,
-    backgroundColor: Annotated[str | None, Form(default=None)] = None,
-    enhance: Annotated[bool, Form(default=False)] = False,
-    saveOutput: Annotated[bool, Form(default=True)] = True,
+    file: UploadFile | None = File(default=None),
+    imagePath: str | None = Form(default=None),
+    sceneId: str | None = Form(default=None),
+    sizeKey: str | None = Form(default=None),
+    backgroundColor: str | None = Form(default=None),
+    enhance: bool = Form(default=False),
+    saveOutput: bool = Form(default=True),
 ) -> ApiResponse[GenerateData]:
     if file is None and not imagePath:
         raise InvalidArgumentError('Either file or imagePath must be provided')
