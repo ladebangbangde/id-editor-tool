@@ -37,7 +37,11 @@ async def app_error_handler(_: Request, exc: AppError) -> JSONResponse:
     logger.warning('Handled business error code=%s message=%s', exc.code, exc.message)
     return JSONResponse(
         status_code=exc.status_code,
-        content=ApiResponse(success=False, message='error', error=ErrorBody(code=exc.code, message=exc.message)).model_dump(),
+        content=ApiResponse(
+            success=False,
+            message='error',
+            error=ErrorBody(code=exc.code, message=exc.message, details=exc.details),
+        ).model_dump(),
     )
 
 

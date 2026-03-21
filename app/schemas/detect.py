@@ -1,8 +1,14 @@
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import FaceBox
+
+
+class DetectIssue(BaseModel):
+    code: str
+    message: str
+    severity: Literal['WARNING', 'FAILED']
 
 
 class DetectData(BaseModel):
@@ -13,7 +19,20 @@ class DetectData(BaseModel):
     width: int
     height: int
     pass_: bool = Field(alias='pass')
-    reasons: List[str]
-    faceBoxes: List[FaceBox]
     recommended: bool
+    status: Literal['PASSED', 'WARNING', 'FAILED']
+    canGenerate: bool
+    reasons: List[str]
+    reasonCodes: List[str]
+    warnings: List[str]
+    warningCodes: List[str]
+    issues: List[DetectIssue]
+    faceBoxes: List[FaceBox]
     warning: Optional[str] = None
+    blurScore: Optional[float] = None
+    occlusionDetected: bool = False
+    occlusionAreas: List[str] = Field(default_factory=list)
+    poseAccepted: bool = True
+    landmarkStable: bool = True
+    compositionAccepted: bool = True
+    metrics: Dict[str, float] = Field(default_factory=dict)

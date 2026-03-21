@@ -6,8 +6,13 @@ from PIL import Image
 
 from app.core.config import get_settings
 from app.core.exceptions import (
+    BadCompositionError,
+    EyeOccludedError,
+    FaceOccludedError,
     InvalidArgumentError,
     InvalidImageError,
+    InvalidPoseError,
+    LandmarkUnstableError,
     MultipleFacesDetectedError,
     NoFaceDetectedError,
 )
@@ -19,7 +24,7 @@ from app.schemas.layout import LayoutData
 from app.services.background import BackgroundService
 from app.services.cropper import CropperService
 from app.services.enhancer import EnhancerService
-from app.services.face_detection import FaceDetectionService
+from app.services.face_detection import FaceDetectionResult, FaceDetectionService
 from app.services.layout import LayoutService
 from app.services.segmentation import SegmentationService
 from app.services.specs import PhotoSpec, get_photo_spec
@@ -57,18 +62,61 @@ class PhotoProcessor:
         logger.info('Reading shared image path=%s', resolved_path)
         return resolved_path, load_image_from_path(resolved_path)
 
-    def detect(self, image: Image.Image) -> DetectData:
-        result = self.detector.detect(image)
+    def _build_detect_data(self, result: FaceDetectionResult) -> DetectData:
         return DetectData(
             hasFace=result.has_face,
             faceCount=result.face_count,
             width=result.width,
             height=result.height,
-            pass_=result.recommended,
+            pass_=result.can_generate,
+            status=result.status,
+            canGenerate=result.can_generate,
             reasons=result.reasons,
+            reasonCodes=result.reason_codes,
+            warnings=result.warnings,
+            warningCodes=result.warning_codes,
+            issues=[
+                {
+                    'code': issue.code,
+                    'message': issue.message,
+                    'severity': issue.severity,
+                }
+                for issue in result.issues
+            ],
             faceBoxes=result.face_boxes,
             recommended=result.recommended,
+            warning='；'.join(result.warnings) if result.warnings else None,
+            blurScore=result.blur_score,
+            occlusionDetected=result.occlusion_detected,
+            occlusionAreas=result.occlusion_areas,
+            poseAccepted=result.pose_accepted,
+            landmarkStable=result.landmark_stable,
+            compositionAccepted=result.composition_accepted,
+            metrics=result.metrics,
         )
+
+    def detect(self, image: Image.Image) -> DetectData:
+        return self._build_detect_data(self.detector.detect(image))
+
+    def _raise_detect_failure(self, detect_result: FaceDetectionResult) -> None:
+        details = self._build_detect_data(detect_result).model_dump(by_alias=True)
+        code = detect_result.reason_codes[0] if detect_result.reason_codes else 'NO_FACE_DETECTED'
+        message = detect_result.reasons[0] if detect_result.reasons else 'Source image is not suitable for ID photo generation'
+        if code == 'NO_FACE_DETECTED':
+            raise NoFaceDetectedError(message)
+        if code == 'MULTIPLE_FACES_DETECTED':
+            raise MultipleFacesDetectedError(message)
+        if code == 'EYE_OCCLUDED':
+            raise EyeOccludedError(message, details)
+        if code == 'FACE_OCCLUDED':
+            raise FaceOccludedError(message, details)
+        if code == 'INVALID_POSE':
+            raise InvalidPoseError(message, details)
+        if code == 'LANDMARK_UNSTABLE':
+            raise LandmarkUnstableError(message, details)
+        if code == 'BAD_COMPOSITION':
+            raise BadCompositionError(message, details)
+        raise InvalidImageError(message)
 
     def _size_info(self, spec: PhotoSpec) -> SizeInfo:
         return SizeInfo(
@@ -99,6 +147,9 @@ class PhotoProcessor:
             raise NoFaceDetectedError()
         if detect_result.face_count > 1:
             raise MultipleFacesDetectedError()
+        if not detect_result.can_generate:
+            logger.info('Generate blocked by detect gatekeeper status=%s reasons=%s', detect_result.status, detect_result.reason_codes)
+            self._raise_detect_failure(detect_result)
 
         task_id = build_task_id('gen')
         self.storage.category_task_dir('temp', task_id)
@@ -138,7 +189,7 @@ class PhotoProcessor:
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)
 
-        warnings = [] if detect_result.recommended else detect_result.reasons.copy()
+        warnings = detect_result.warnings.copy()
         preview_info = self._file_info(preview_path) if save_output else FileInfo(path='', url='')
         hd_info = self._file_info(hd_path) if save_output else FileInfo(path='', url='')
         return GenerateData(
@@ -152,7 +203,7 @@ class PhotoProcessor:
             width=spec.width_px,
             height=spec.height_px,
             warnings=warnings,
-            detect=self.detect(image),
+            detect=self._build_detect_data(detect_result),
             intermediateFiles=intermediate_files,
         )
 
