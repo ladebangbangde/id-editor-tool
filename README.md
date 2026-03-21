@@ -5,10 +5,10 @@
 ## 功能列表
 
 - `GET /health`：健康检查。
-- `POST /detect`：上传图片做人脸基础检测。
-- `POST /generate`：上传原图生成证件照预览图与高清图。
-- `POST /layout`：基于原图或已生成证件照生成 6 寸排版图。
-- `/outputs/...`：直接访问本地输出结果。
+- `POST /detect`：支持上传图片或传入共享图片路径做人脸基础检测。
+- `POST /generate`：支持上传原图或传入共享路径生成证件照预览图与高清图。
+- `POST /layout`：基于原图/共享路径/已生成证件照生成 6 寸排版图。
+- `/uploads/...`：直接访问共享上传目录中的静态结果。
 - 自动按日期 + 任务 ID 保存输出，便于肉眼查看效果。
 - 支持基础调试中间文件保存：前景图、透明裁剪图。
 - 自带 Swagger / OpenAPI：`/docs`。
@@ -35,8 +35,7 @@ id-editor-tool/
     services/
     utils/
     main.py
-  inputs/
-  outputs/
+  uploads/
   scripts/
     run_local.sh
     test_detect.py
@@ -58,10 +57,11 @@ id-editor-tool/
 
 ## 准备测试图片
 
-请把你的测试照片放到 `inputs/` 目录，例如：
+如需走共享目录联调，请把测试照片放到共享上传根目录下，例如：
 
 ```bash
-cp /path/to/your-photo.jpg inputs/test.jpg
+mkdir -p uploads/original
+cp /path/to/your-photo.jpg uploads/original/test.jpg
 ```
 
 建议照片要求：
@@ -79,7 +79,7 @@ cp /path/to/your-photo.jpg inputs/test.jpg
 python scripts/create_sample_image.py
 ```
 
-该命令会利用 `skimage` 自带的 `astronaut` 示例图生成 `inputs/sample_astronaut.png`。
+该命令会利用 `skimage` 自带的 `astronaut` 示例图生成测试图片；如需和 Docker 共享目录联调，建议再复制到 `uploads/original/`。
 
 ## 本地启动
 
@@ -122,15 +122,30 @@ docker build -t id-editor-tool .
 ```bash
 docker run --rm \
   -p 8000:8000 \
-  -v $(pwd)/outputs:/app/outputs \
-  -v $(pwd)/inputs:/app/inputs \
+  -v $(pwd)/uploads:/app/uploads \
   id-editor-tool
 ```
 
+> 如果与 `id-editor-server` 联动，请对两个容器都挂载宿主机上的同一个目录到 `/app/uploads`。
 启动后访问：
 
 - <http://127.0.0.1:8000/health>
 - <http://127.0.0.1:8000/docs>
+
+### 与 `id-editor-server` 共享宿主机目录
+
+推荐让两个容器都挂载同一个宿主机目录：
+
+```bash
+mkdir -p /data/id-photo-uploads/{original,preview,hd,print,temp}
+
+docker run -d --name id-editor-tool \
+  -p 8000:8000 \
+  -v /data/id-photo-uploads:/app/uploads \
+  id-editor-tool
+```
+
+此时 `id-editor-server` 可以把 `/app/uploads/original/xxx.png` 直接传给本服务的 `imagePath` / `idPhotoPath` 字段，本服务会继续把生成结果写入同一挂载目录并通过 `/uploads/...` 暴露。
 
 ## 配置说明
 
@@ -142,8 +157,13 @@ APP_HOST=0.0.0.0
 APP_PORT=8000
 LOG_LEVEL=INFO
 DEBUG=false
-INPUT_DIR=inputs
-OUTPUT_DIR=outputs
+UPLOAD_ROOT=/app/uploads
+STATIC_MOUNT_PATH=/uploads
+ORIGINAL_DIR=original
+PREVIEW_DIR=preview
+HD_DIR=hd
+PRINT_DIR=print
+TEMP_DIR=temp
 SAVE_INTERMEDIATE=true
 MAX_UPLOAD_SIZE_MB=15
 DEFAULT_BACKGROUND_COLOR=blue
@@ -158,8 +178,8 @@ HD_QUALITY=95
 关键配置项：
 
 - `APP_PORT`：服务端口
-- `INPUT_DIR`：输入目录
-- `OUTPUT_DIR`：输出目录
+- `UPLOAD_ROOT`：容器内共享上传根目录，默认 `/app/uploads`
+- `STATIC_MOUNT_PATH`：静态访问前缀，默认 `/uploads`
 - `SAVE_INTERMEDIATE`：是否保存抠图等中间结果
 - `MAX_UPLOAD_SIZE_MB`：最大上传大小
 - `DEFAULT_BACKGROUND_COLOR`：默认底色
@@ -191,7 +211,16 @@ HD_QUALITY=95
 {
   "success": true,
   "service": "id-editor-tool",
-  "status": "ok"
+  "status": "ok",
+  "uploadRoot": "/app/uploads",
+  "staticMountPath": "/uploads",
+  "directories": {
+    "original": "/app/uploads/original",
+    "preview": "/app/uploads/preview",
+    "hd": "/app/uploads/hd",
+    "print": "/app/uploads/print",
+    "temp": "/app/uploads/temp"
+  }
 }
 ```
 
@@ -200,7 +229,8 @@ HD_QUALITY=95
 `POST /detect`
 
 - Content-Type: `multipart/form-data`
-- 字段：`file`
+- 字段：`file` 或 `imagePath`
+- `imagePath` 可直接传共享绝对路径，如 `/app/uploads/original/test.jpg`
 
 示例返回：
 
@@ -241,7 +271,8 @@ HD_QUALITY=95
 
 表单字段：
 
-- `file`：原图
+- `file`：原图，可选
+- `imagePath`：共享目录中的原图路径，可选，例如 `/app/uploads/original/test.jpg`
 - `sceneId` 或 `sizeKey`
 - `backgroundColor`
 - `enhance`
@@ -255,10 +286,10 @@ HD_QUALITY=95
   "message": "ok",
   "data": {
     "taskId": "gen_20260318_120000_ab12cd34",
-    "previewPath": "/workspace/id-editor-tool/outputs/20260318/.../id_photo_preview.jpg",
-    "previewUrl": "/outputs/20260318/.../id_photo_preview.jpg",
-    "hdPath": "/workspace/id-editor-tool/outputs/20260318/.../id_photo_hd.png",
-    "hdUrl": "/outputs/20260318/.../id_photo_hd.png",
+    "previewPath": "/app/uploads/preview/20260318/.../id_photo_preview.jpg",
+    "previewUrl": "/uploads/preview/20260318/.../id_photo_preview.jpg",
+    "hdPath": "/app/uploads/hd/20260318/.../id_photo_hd.png",
+    "hdUrl": "/uploads/hd/20260318/.../id_photo_hd.png",
     "backgroundColor": "blue",
     "size": {
       "key": "one_inch",
@@ -279,13 +310,15 @@ HD_QUALITY=95
 
 两种调用方式：
 
-1. 直接传 `idPhoto`
-2. 传 `image` + `sizeKey` 等参数，让服务内部先生成证件照再排版
+1. 直接传 `idPhoto` 或 `idPhotoPath`
+2. 传 `image` / `imagePath` + `sizeKey` 等参数，让服务内部先生成证件照再排版
 
 表单字段：
 
-- `idPhoto`：已生成证件照，可选
-- `image`：原图，可选
+- `idPhoto`：已生成证件照上传文件，可选
+- `idPhotoPath`：共享目录中的已生成证件照绝对路径，可选
+- `image`：原图上传文件，可选
+- `imagePath`：共享目录中的原图绝对路径，可选
 - `sceneId` 或 `sizeKey`
 - `backgroundColor`
 - `enhance`
@@ -297,9 +330,9 @@ HD_QUALITY=95
 生成完成后，可直接访问：
 
 ```text
-http://127.0.0.1:8000/outputs/20260318/<task_id>/id_photo_preview.jpg
-http://127.0.0.1:8000/outputs/20260318/<task_id>/id_photo_hd.png
-http://127.0.0.1:8000/outputs/20260318/<task_id>/layout_6inch.jpg
+http://127.0.0.1:8000/uploads/preview/20260318/<task_id>/id_photo_preview.jpg
+http://127.0.0.1:8000/uploads/hd/20260318/<task_id>/id_photo_hd.png
+http://127.0.0.1:8000/uploads/print/20260318/<task_id>/layout_6inch.jpg
 ```
 
 ## curl 快速验证
@@ -314,17 +347,34 @@ curl http://127.0.0.1:8000/health
 
 ```bash
 curl -X POST http://127.0.0.1:8000/detect \
-  -F "file=@inputs/test.jpg"
+  -F "file=@uploads/original/test.jpg"
+```
+
+或直接传共享绝对路径：
+
+```bash
+curl -X POST http://127.0.0.1:8000/detect \
+  -F "imagePath=/app/uploads/original/test.jpg"
 ```
 
 ### generate
 
 ```bash
 curl -X POST http://127.0.0.1:8000/generate \
-  -F "file=@inputs/test.jpg" \
+  -F "file=@uploads/original/test.jpg" \
   -F "sizeKey=one_inch" \
   -F "backgroundColor=blue" \
   -F "enhance=true" \
+  -F "saveOutput=true"
+```
+
+或直接传共享绝对路径：
+
+```bash
+curl -X POST http://127.0.0.1:8000/generate \
+  -F "imagePath=/app/uploads/original/test.jpg" \
+  -F "sizeKey=one_inch" \
+  -F "backgroundColor=blue" \
   -F "saveOutput=true"
 ```
 
@@ -332,7 +382,18 @@ curl -X POST http://127.0.0.1:8000/generate \
 
 ```bash
 curl -X POST http://127.0.0.1:8000/layout \
-  -F "image=@inputs/test.jpg" \
+  -F "image=@uploads/original/test.jpg" \
+  -F "sizeKey=one_inch" \
+  -F "backgroundColor=blue" \
+  -F "paper=6inch" \
+  -F "saveOutput=true"
+```
+
+或使用共享绝对路径：
+
+```bash
+curl -X POST http://127.0.0.1:8000/layout \
+  -F "imagePath=/app/uploads/original/test.jpg" \
   -F "sizeKey=one_inch" \
   -F "backgroundColor=blue" \
   -F "paper=6inch" \
@@ -361,24 +422,20 @@ python scripts/test_layout.py --image inputs/test.jpg --size-key one_inch --back
 
 ## 输出结果在哪里看
 
-所有结果保存在：
+所有结果都会保存在共享上传根目录 `/app/uploads` 下：
 
 ```text
-outputs/<日期>/<task_id>/
+/app/uploads/original/
+/app/uploads/preview/<日期>/<task_id>/id_photo_preview.jpg
+/app/uploads/hd/<日期>/<task_id>/id_photo_hd.png
+/app/uploads/print/<日期>/<task_id>/layout_6inch.jpg
+/app/uploads/temp/<日期>/<task_id>/foreground.png
 ```
-
-典型文件：
-
-- `foreground.png`：抠图前景（启用 `SAVE_INTERMEDIATE=true` 时保存）
-- `cropped_rgba.png`：透明裁剪图（启用 `SAVE_INTERMEDIATE=true` 时保存）
-- `id_photo_preview.jpg`：预览图
-- `id_photo_hd.png`：高清图
-- `layout_6inch.jpg`：排版图
 
 你可以：
 
-1. 直接打开本地文件夹查看
-2. 或访问返回里的 `/outputs/...` URL 在浏览器查看
+1. 直接在宿主机挂载目录查看文件
+2. 或访问返回里的 `/uploads/...` URL 在浏览器查看
 
 ## 日志与调试
 
@@ -439,7 +496,7 @@ SAVE_INTERMEDIATE=true
 确认运行时挂载了卷：
 
 ```bash
--v $(pwd)/outputs:/app/outputs
+-v $(pwd)/uploads:/app/uploads
 ```
 
 ## 最小验收流程
@@ -450,7 +507,7 @@ SAVE_INTERMEDIATE=true
 2. `GET /health`
 3. `POST /detect`
 4. `POST /generate`
-5. 打开返回的 `/outputs/...` 查看证件照
+5. 打开返回的 `/uploads/...` 查看证件照
 6. `POST /layout`
 7. 打开返回的排版图 URL
 

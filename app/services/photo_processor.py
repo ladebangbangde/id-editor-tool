@@ -24,7 +24,7 @@ from app.services.segmentation import SegmentationService
 from app.services.specs import PhotoSpec, get_photo_spec
 from app.services.storage import StorageService
 from app.utils.file_naming import build_task_id
-from app.utils.image_io import load_image_from_bytes, save_image
+from app.utils.image_io import load_image_from_bytes, load_image_from_path, resolve_input_path, save_image
 from app.utils.validators import validate_content_size, validate_upload
 
 logger = get_logger(__name__)
@@ -50,6 +50,11 @@ class PhotoProcessor:
             raise InvalidImageError('Uploaded file is empty')
         image = load_image_from_bytes(content)
         return content, image
+
+    def read_image_path(self, path_or_url: str) -> tuple[Path, Image.Image]:
+        resolved_path = resolve_input_path(path_or_url)
+        logger.info('Reading shared image path=%s', resolved_path)
+        return resolved_path, load_image_from_path(resolved_path)
 
     def detect(self, image: Image.Image) -> DetectData:
         result = self.detector.detect(image)
@@ -95,18 +100,18 @@ class PhotoProcessor:
             raise MultipleFacesDetectedError()
 
         task_id = build_task_id('gen')
-        task_dir = self.storage.task_dir(task_id)
-        logger.info('Task directory prepared: %s', task_dir)
+        self.storage.category_task_dir('temp', task_id)
+        logger.info('Task directories prepared task_id=%s upload_root=%s', task_id, self.storage.upload_root)
 
         rgba_foreground = self.segmenter.remove_background(image)
         logger.info('Background removed')
         if self.settings.save_intermediate:
-            save_image(rgba_foreground, task_dir / 'foreground.png')
+            save_image(rgba_foreground, self.storage.temp_path(task_id, 'foreground.png'))
 
         cropped_rgba = self.cropper.crop(rgba_foreground, spec, detect_result.primary_face)
         logger.info('Portrait cropped to target size')
         if self.settings.save_intermediate:
-            save_image(cropped_rgba, task_dir / 'cropped_rgba.png')
+            save_image(cropped_rgba, self.storage.temp_path(task_id, 'cropped_rgba.png'))
 
         hd_image = self.background.apply(cropped_rgba, background_color)
         logger.info('Background applied')
@@ -117,8 +122,8 @@ class PhotoProcessor:
         preview_image = hd_image.copy()
         preview_image.thumbnail((max(256, spec.width_px), max(256, spec.height_px)), Image.Resampling.LANCZOS)
 
-        hd_path = task_dir / 'id_photo_hd.png'
-        preview_path = task_dir / 'id_photo_preview.jpg'
+        hd_path = self.storage.hd_path(task_id, 'id_photo_hd.png')
+        preview_path = self.storage.preview_path(task_id, 'id_photo_preview.jpg')
         if save_output:
             save_image(hd_image, hd_path)
             save_image(preview_image, preview_path, quality=self.settings.preview_quality)
@@ -128,7 +133,7 @@ class PhotoProcessor:
         if self.settings.save_intermediate:
             intermediate_files = {}
             for name in ('foreground.png', 'cropped_rgba.png'):
-                path = task_dir / name
+                path = self.storage.temp_path(task_id, name)
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)
 
@@ -173,49 +178,80 @@ class PhotoProcessor:
             save_output=save_output,
         )
 
+    def generate_from_path(
+        self,
+        image_path: str,
+        size_key: str | None,
+        background_color: str | None,
+        enhance: bool,
+        save_output: bool,
+    ) -> GenerateData:
+        _, image = self.read_image_path(image_path)
+        return self.generate(
+            image=image,
+            size_key=size_key or self.settings.default_size_key,
+            background_color=background_color or self.settings.default_background_color,
+            enhance=enhance,
+            save_output=save_output,
+        )
+
     async def layout(
         self,
         id_photo: UploadFile | None,
         image: UploadFile | None,
+        id_photo_path: str | None,
+        image_path: str | None,
         size_key: str | None,
         background_color: str | None,
         enhance: bool,
         save_output: bool,
         paper: str,
     ) -> LayoutData:
-        if id_photo is None and image is None:
-            raise InvalidArgumentError('Either idPhoto or image must be provided')
+        if id_photo is None and image is None and id_photo_path is None and image_path is None:
+            raise InvalidArgumentError('Either idPhoto, image, idPhotoPath, or imagePath must be provided')
 
         task_id = build_task_id('layout')
-        task_dir = self.storage.task_dir(task_id)
+        self.storage.category_task_dir('temp', task_id)
         warnings: list[str] = []
         source_hd_info = None
         spec = self.resolve_spec(size_key)
 
-        if id_photo is not None:
-            _, photo = await self.read_upload(id_photo)
-            source_hd_path = task_dir / 'source_id_photo.png'
+        if id_photo is not None or id_photo_path is not None:
+            if id_photo is not None:
+                _, photo = await self.read_upload(id_photo)
+            else:
+                _, photo = self.read_image_path(id_photo_path or '')
+            source_hd_path = self.storage.temp_path(task_id, 'source_id_photo.png')
             if save_output:
                 save_image(photo.convert('RGB'), source_hd_path)
             source_hd_info = self._file_info(source_hd_path)
             hd_image = photo.convert('RGB')
         else:
-            generated = await self.generate_from_upload(
-                file=image,
-                size_key=spec.key,
-                background_color=background_color,
-                enhance=enhance,
-                save_output=True,
-            )
+            if image is not None:
+                generated = await self.generate_from_upload(
+                    file=image,
+                    size_key=spec.key,
+                    background_color=background_color,
+                    enhance=enhance,
+                    save_output=True,
+                )
+            else:
+                generated = self.generate_from_path(
+                    image_path=image_path or '',
+                    size_key=spec.key,
+                    background_color=background_color,
+                    enhance=enhance,
+                    save_output=True,
+                )
             warnings.extend(generated.warnings)
             hd_image = Image.open(generated.hdPath).convert('RGB')
             source_hd_info = FileInfo(path=generated.hdPath, url=generated.hdUrl)
             task_id = generated.taskId
-            task_dir = self.storage.task_dir(task_id)
+            self.storage.category_task_dir('temp', task_id)
             spec = get_photo_spec(generated.size.key)
 
         layout_image, count = self.layout_service.build(hd_image, spec, paper)
-        layout_path = task_dir / 'layout_6inch.jpg'
+        layout_path = self.storage.print_path(task_id, 'layout_6inch.jpg')
         if save_output:
             save_image(layout_image, layout_path, quality=self.settings.hd_quality)
             logger.info('Layout saved path=%s count=%s', layout_path, count)

@@ -25,7 +25,11 @@ app.include_router(health_router)
 app.include_router(detect_router)
 app.include_router(generate_router)
 app.include_router(layout_router)
-app.mount('/outputs', StaticFiles(directory=str(settings.resolved_output_dir)), name='outputs')
+app.mount(
+    settings.normalized_static_mount_path,
+    StaticFiles(directory=str(settings.upload_root_path)),
+    name='uploads',
+)
 
 
 @app.exception_handler(AppError)
@@ -52,4 +56,10 @@ async def unexpected_error_handler(_: Request, exc: Exception) -> JSONResponse:
 
 @app.get('/')
 def root() -> dict:
-    return {'service': settings.service_name, 'docs': '/docs', 'health': '/health'}
+    return {
+        'service': settings.service_name,
+        'docs': '/docs',
+        'health': '/health',
+        'uploadRoot': str(settings.upload_root_path),
+        'staticMountPath': settings.normalized_static_mount_path,
+    }

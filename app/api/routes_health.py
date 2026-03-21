@@ -12,4 +12,7 @@ def health() -> dict:
         'success': True,
         'service': settings.service_name,
         'status': 'ok',
+        'uploadRoot': str(settings.upload_root_path),
+        'staticMountPath': settings.normalized_static_mount_path,
+        'directories': {name: str(path) for name, path in settings.upload_dirs.items() if name != 'base'},
     }

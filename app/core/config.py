@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,9 +14,13 @@ class Settings(BaseSettings):
     log_level: str = Field(default='INFO', alias='LOG_LEVEL')
     debug: bool = Field(default=False, alias='DEBUG')
 
-    base_dir: Path = Field(default=Path('.'), alias='BASE_DIR')
-    input_dir: Path = Field(default=Path('inputs'), alias='INPUT_DIR')
-    output_dir: Path = Field(default=Path('outputs'), alias='OUTPUT_DIR')
+    upload_root: Path = Field(default=Path('/app/uploads'), validation_alias=AliasChoices('UPLOAD_ROOT', 'UPLOAD_BASE_DIR'))
+    static_mount_path: str = Field(default='/uploads', alias='STATIC_MOUNT_PATH')
+    original_dir_name: str = Field(default='original', alias='ORIGINAL_DIR')
+    preview_dir_name: str = Field(default='preview', alias='PREVIEW_DIR')
+    hd_dir_name: str = Field(default='hd', alias='HD_DIR')
+    print_dir_name: str = Field(default='print', alias='PRINT_DIR')
+    temp_dir_name: str = Field(default='temp', alias='TEMP_DIR')
     save_intermediate: bool = Field(default=False, alias='SAVE_INTERMEDIATE')
     max_upload_size_mb: int = Field(default=15, alias='MAX_UPLOAD_SIZE_MB')
     default_background_color: str = Field(default='blue', alias='DEFAULT_BACKGROUND_COLOR')
@@ -34,17 +38,28 @@ class Settings(BaseSettings):
         return self.max_upload_size_mb * 1024 * 1024
 
     @property
-    def resolved_input_dir(self) -> Path:
-        return (self.base_dir / self.input_dir).resolve()
+    def upload_root_path(self) -> Path:
+        return self.upload_root.resolve()
 
     @property
-    def resolved_output_dir(self) -> Path:
-        return (self.base_dir / self.output_dir).resolve()
+    def normalized_static_mount_path(self) -> str:
+        return f"/{self.static_mount_path.strip('/')}"
+
+    @property
+    def upload_dirs(self) -> dict[str, Path]:
+        return {
+            'base': self.upload_root_path,
+            'original': self.upload_root_path / self.original_dir_name,
+            'preview': self.upload_root_path / self.preview_dir_name,
+            'hd': self.upload_root_path / self.hd_dir_name,
+            'print': self.upload_root_path / self.print_dir_name,
+            'temp': self.upload_root_path / self.temp_dir_name,
+        }
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     settings = Settings()
-    settings.resolved_input_dir.mkdir(parents=True, exist_ok=True)
-    settings.resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    for directory in settings.upload_dirs.values():
+        directory.mkdir(parents=True, exist_ok=True)
     return settings

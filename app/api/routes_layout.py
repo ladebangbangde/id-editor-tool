@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.schemas.common import ApiResponse
@@ -10,18 +12,22 @@ processor = PhotoProcessor()
 
 @router.post('/layout', response_model=ApiResponse[LayoutData])
 async def layout(
-    idPhoto: UploadFile | None = File(default=None),
-    image: UploadFile | None = File(default=None),
-    sceneId: str | None = Form(default=None),
-    sizeKey: str | None = Form(default=None),
-    backgroundColor: str | None = Form(default=None),
-    enhance: bool = Form(default=False),
-    saveOutput: bool = Form(default=True),
-    paper: str = Form(default='6inch'),
+    idPhoto: Annotated[UploadFile | None, File(default=None)] = None,
+    image: Annotated[UploadFile | None, File(default=None)] = None,
+    idPhotoPath: Annotated[str | None, Form(default=None)] = None,
+    imagePath: Annotated[str | None, Form(default=None)] = None,
+    sceneId: Annotated[str | None, Form(default=None)] = None,
+    sizeKey: Annotated[str | None, Form(default=None)] = None,
+    backgroundColor: Annotated[str | None, Form(default=None)] = None,
+    enhance: Annotated[bool, Form(default=False)] = False,
+    saveOutput: Annotated[bool, Form(default=True)] = True,
+    paper: Annotated[str, Form(default='6inch')] = '6inch',
 ) -> ApiResponse[LayoutData]:
     data = await processor.layout(
         id_photo=idPhoto,
         image=image,
+        id_photo_path=idPhotoPath,
+        image_path=imagePath,
         size_key=sizeKey or sceneId,
         background_color=backgroundColor,
         enhance=enhance,

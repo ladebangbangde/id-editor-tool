@@ -2,7 +2,9 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    UPLOAD_ROOT=/app/uploads \
+    STATIC_MOUNT_PATH=/uploads
 
 WORKDIR /app
 
@@ -18,7 +20,14 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/inputs /app/outputs
+RUN mkdir -p \
+    /app/uploads/original \
+    /app/uploads/preview \
+    /app/uploads/hd \
+    /app/uploads/print \
+    /app/uploads/temp
+
+VOLUME ["/app/uploads"]
 
 EXPOSE 8000
 
