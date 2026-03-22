@@ -8,7 +8,7 @@
 - `POST /detect`：支持上传图片或传入共享图片路径做人脸基础检测。
 - `POST /generate`：支持上传原图或传入共享路径生成证件照预览图与高清图。
 - `POST /layout`：基于原图/共享路径/已生成证件照生成 6 寸排版图。
-- `POST /formal-wear`：兼容 server 当前一键换装联调入口，复用现有证件照生成主链路返回预览图与高清图。
+- `POST /formal-wear`：兼容 server 当前一键换装联调入口，使用纯代码绘制的轻量正装图层生成预览图与高清图。
 - `/uploads/...`：直接访问共享上传目录中的静态结果。
 - 自动按日期 + 任务 ID 保存输出，便于肉眼查看效果。
 - 支持基础调试中间文件保存：前景图、透明裁剪图。
@@ -343,8 +343,9 @@ HD_QUALITY=95
 说明：
 
 - 当前该接口优先用于兼容 `id-editor-server` 已上线的 `POST /formal-wear` 调用路径。
-- 内部复用现有 `/generate` 主链路，不会替换或删除原有证件照接口。
-- `color` 会映射到当前工具已支持的背景色能力；`style` / `gender` 会保留在返回结构中，便于 server 继续透传给前端。
+- 不会替换或删除原有 `/detect`、`/generate`、`/layout` 证件照主链路。
+- 当前会基于人脸框、抠图结果和纯代码几何绘制，生成轻量版西装 / 衬衫 / 领口 / 领带等正装图层。
+- 当前 MVP 支持 `gender=male/female`、`style=standard/business/simple`、`color=black/navy/gray`。
 
 示例返回重点字段：
 

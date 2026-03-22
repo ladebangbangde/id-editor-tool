@@ -1,159 +1,119 @@
-from __future__ import annotations
+from dataclasses import dataclass
 
-from dataclasses import dataclass, field
-
-from app.services.face_detection import FaceDetectionResult
+from app.services.specs import PhotoSpec
 
 
-@dataclass
-class FormalWearAnchors:
-    image_width: int
-    image_height: int
+@dataclass(frozen=True)
+class CropBox:
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+    @property
+    def width(self) -> int:
+        return self.right - self.left
+
+    @property
+    def height(self) -> int:
+        return self.bottom - self.top
+
+
+@dataclass(frozen=True)
+class FormalWearGeometry:
     face_box: dict[str, int]
     head_center_x: float
-    head_center_y: float
     chin_y: float
-    neck_center_x: float
-    neck_top_y: float
-    neck_bottom_y: float
-    neck_width: float
+    neck_left_x: float
+    neck_right_x: float
+    shoulder_left_x: float
+    shoulder_right_x: float
     shoulder_y: float
-    left_shoulder_x: float
-    right_shoulder_x: float
-    chest_top_y: float
-    chest_bottom_y: float
-    jacket_top_y: float
-    lapel_inner_gap: float
-    lapel_outer_span: float
-    tie_top_y: float
-    tie_bottom_y: float
+    chest_y: float
+    waist_y: float
+    torso_bottom_y: float
 
 
-@dataclass
-class ShoulderNeckAssessment:
-    passed: bool
-    reasons: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    metrics: dict[str, float] = field(default_factory=dict)
+def compute_crop_box(image_width: int, image_height: int, spec: PhotoSpec, face_box: dict[str, int] | None) -> CropBox:
+    target_ratio = spec.width_px / spec.height_px
+
+    if face_box:
+        fx = face_box['x'] + face_box['width'] / 2
+        fy = face_box['y'] + face_box['height'] / 2
+        crop_height = min(image_height, max(face_box['height'] / 0.42, spec.height_px))
+        crop_width = crop_height * target_ratio
+        if crop_width > image_width:
+            crop_width = image_width
+            crop_height = crop_width / target_ratio
+        left = max(0, min(image_width - crop_width, fx - crop_width / 2))
+        top = max(0, min(image_height - crop_height, fy - crop_height * 0.38))
+    else:
+        crop_width = min(image_width, image_height * target_ratio)
+        crop_height = crop_width / target_ratio
+        left = (image_width - crop_width) / 2
+        top = (image_height - crop_height) / 2
+
+    return CropBox(
+        left=int(round(left)),
+        top=int(round(top)),
+        right=int(round(left + crop_width)),
+        bottom=int(round(top + crop_height)),
+    )
 
 
-class FormalWearGeometry:
-    def estimate_anchors(
-        self,
-        image_size: tuple[int, int],
-        face_box: dict[str, int],
-        gender: str,
-        style: str,
-    ) -> FormalWearAnchors:
-        width, height = image_size
-        x = float(face_box['x'])
-        y = float(face_box['y'])
-        face_w = float(face_box['width'])
-        face_h = float(face_box['height'])
+def project_face_box(face_box: dict[str, int] | None, crop_box: CropBox, target_width: int, target_height: int) -> dict[str, int] | None:
+    if face_box is None:
+        return None
 
-        style_span = {'simple': 1.55, 'standard': 1.72, 'business': 1.82}[style]
-        gender_span_boost = 0.0 if gender == 'male' else 0.08
-        shoulder_span = face_w * (style_span + gender_span_boost)
-        shoulder_half = shoulder_span / 2.0
+    scale_x = target_width / crop_box.width
+    scale_y = target_height / crop_box.height
+    return {
+        'x': int(round((face_box['x'] - crop_box.left) * scale_x)),
+        'y': int(round((face_box['y'] - crop_box.top) * scale_y)),
+        'width': int(round(face_box['width'] * scale_x)),
+        'height': int(round(face_box['height'] * scale_y)),
+    }
 
-        chin_y = y + face_h * 0.94
-        neck_top_y = y + face_h * 0.80
-        neck_bottom_y = chin_y + face_h * (0.17 if gender == 'male' else 0.15)
-        shoulder_y = chin_y + face_h * (0.24 if gender == 'male' else 0.20)
-        chest_top_y = shoulder_y - face_h * 0.03
-        chest_bottom_y = min(height - 1.0, shoulder_y + face_h * 0.98)
-        jacket_top_y = chin_y + face_h * 0.10
-        head_center_x = x + face_w / 2.0
-        head_center_y = y + face_h * 0.42
-        neck_width = face_w * (0.30 if gender == 'male' else 0.28)
-        lapel_inner_gap = face_w * (0.18 if style == 'simple' else 0.16)
-        lapel_outer_span = face_w * (0.60 if style == 'business' else 0.52)
-        tie_top_y = neck_bottom_y - face_h * 0.03
-        tie_bottom_y = min(height - 1.0, chest_bottom_y - face_h * 0.16)
 
-        return FormalWearAnchors(
-            image_width=width,
-            image_height=height,
-            face_box=face_box,
-            head_center_x=head_center_x,
-            head_center_y=head_center_y,
-            chin_y=chin_y,
-            neck_center_x=head_center_x,
-            neck_top_y=neck_top_y,
-            neck_bottom_y=neck_bottom_y,
-            neck_width=neck_width,
-            shoulder_y=shoulder_y,
-            left_shoulder_x=max(0.0, head_center_x - shoulder_half),
-            right_shoulder_x=min(width - 1.0, head_center_x + shoulder_half),
-            chest_top_y=chest_top_y,
-            chest_bottom_y=chest_bottom_y,
-            jacket_top_y=jacket_top_y,
-            lapel_inner_gap=lapel_inner_gap,
-            lapel_outer_span=lapel_outer_span,
-            tie_top_y=tie_top_y,
-            tie_bottom_y=tie_bottom_y,
-        )
+def estimate_formal_wear_geometry(canvas_width: int, canvas_height: int, face_box: dict[str, int] | None, gender: str | None, style: str) -> FormalWearGeometry:
+    if face_box is None:
+        face_width = canvas_width * 0.30
+        face_height = canvas_height * 0.28
+        face_x = (canvas_width - face_width) / 2
+        face_y = canvas_height * 0.10
+        face_box = {
+            'x': int(round(face_x)),
+            'y': int(round(face_y)),
+            'width': int(round(face_width)),
+            'height': int(round(face_height)),
+        }
 
-    def assess_shoulder_neck(
-        self,
-        image_size: tuple[int, int],
-        face_box: dict[str, int],
-        detect_result: FaceDetectionResult,
-        gender: str,
-        style: str,
-    ) -> ShoulderNeckAssessment:
-        width, height = image_size
-        anchors = self.estimate_anchors(image_size, face_box, gender, style)
-        x = float(face_box['x'])
-        y = float(face_box['y'])
-        face_w = float(face_box['width'])
-        face_h = float(face_box['height'])
-        center_x = x + face_w / 2.0
+    face_center_x = face_box['x'] + face_box['width'] / 2
+    chin_y = face_box['y'] + face_box['height'] * 1.02
 
-        bottom_room_ratio = max(height - anchors.chin_y, 0.0) / max(height, 1)
-        left_shoulder_room_ratio = max(center_x - anchors.left_shoulder_x, 0.0) / max(width, 1)
-        right_shoulder_room_ratio = max(anchors.right_shoulder_x - center_x, 0.0) / max(width, 1)
-        face_height_ratio = face_h / max(height, 1)
-        face_width_ratio = face_w / max(width, 1)
-        top_margin_ratio = y / max(height, 1)
-        blur_score = detect_result.blur_score or 0.0
+    gender_ratio = 0.46 if gender == 'female' else 0.52
+    style_ratio = {
+        'simple': 1.90,
+        'business': 2.15,
+        'standard': 2.05,
+        'formal': 2.05,
+    }.get(style, 2.0)
+    shoulder_span = face_box['width'] * style_ratio
+    neck_width = face_box['width'] * gender_ratio
+    shoulder_y = min(canvas_height * 0.72, chin_y + face_box['height'] * 0.38)
+    chest_y = min(canvas_height * 0.82, shoulder_y + face_box['height'] * 0.34)
+    waist_y = min(canvas_height * 0.92, shoulder_y + face_box['height'] * 0.95)
 
-        reasons: list[str] = []
-        warnings: list[str] = []
-
-        if face_height_ratio > 0.58:
-            reasons.append('头像占比过大，画面下方缺少可绘制服装区域')
-        elif face_height_ratio > 0.50:
-            warnings.append('头像占比偏大，正装可绘制空间有限')
-
-        if bottom_room_ratio < 0.16:
-            reasons.append('下巴以下留白不足，肩颈区域不完整')
-        elif bottom_room_ratio < 0.22:
-            warnings.append('下巴以下空间偏少，换装效果可能偏紧凑')
-
-        if min(left_shoulder_room_ratio, right_shoulder_room_ratio) < 0.16:
-            reasons.append('左右肩部空间不足，无法稳定绘制正装肩线')
-        elif min(left_shoulder_room_ratio, right_shoulder_room_ratio) < 0.19:
-            warnings.append('肩部空间偏窄，正装肩线容错较低')
-
-        if face_width_ratio > 0.52:
-            reasons.append('人脸横向占比过大，缺少自然肩宽空间')
-        if top_margin_ratio > 0.34:
-            warnings.append('头顶留白较多，正装位置会更依赖启发式估算')
-        if blur_score and blur_score < 0.0018:
-            reasons.append('图片清晰度不足，无法稳定估算肩颈结构')
-
-        return ShoulderNeckAssessment(
-            passed=not reasons,
-            reasons=reasons,
-            warnings=warnings,
-            metrics={
-                'bottomRoomRatio': bottom_room_ratio,
-                'leftShoulderRoomRatio': left_shoulder_room_ratio,
-                'rightShoulderRoomRatio': right_shoulder_room_ratio,
-                'faceHeightRatio': face_height_ratio,
-                'faceWidthRatio': face_width_ratio,
-                'topMarginRatio': top_margin_ratio,
-                'blurScore': blur_score,
-            },
-        )
+    return FormalWearGeometry(
+        face_box=face_box,
+        head_center_x=face_center_x,
+        chin_y=chin_y,
+        neck_left_x=face_center_x - neck_width / 2,
+        neck_right_x=face_center_x + neck_width / 2,
+        shoulder_left_x=max(-canvas_width * 0.05, face_center_x - shoulder_span / 2),
+        shoulder_right_x=min(canvas_width * 1.05, face_center_x + shoulder_span / 2),
+        shoulder_y=shoulder_y,
+        chest_y=chest_y,
+        waist_y=waist_y,
+        torso_bottom_y=canvas_height + canvas_height * 0.08,
+    )

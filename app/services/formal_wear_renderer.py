@@ -1,250 +1,225 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw, ImageFilter
 
-from app.services.formal_wear_geometry import FormalWearAnchors
+from app.services.formal_wear_geometry import FormalWearGeometry, estimate_formal_wear_geometry
 
 
 @dataclass(frozen=True)
-class RenderPalette:
-    jacket: tuple[int, int, int, int]
-    jacket_shadow: tuple[int, int, int, int]
-    lapel: tuple[int, int, int, int]
-    shirt: tuple[int, int, int, int]
-    shirt_shadow: tuple[int, int, int, int]
-    tie: tuple[int, int, int, int]
-    highlight: tuple[int, int, int, int]
+class FormalWearPalette:
+    suit: tuple[int, int, int]
+    suit_shadow: tuple[int, int, int]
+    shirt: tuple[int, int, int]
+    tie: tuple[int, int, int]
+    accent: tuple[int, int, int]
 
 
 class FormalWearRenderer:
-    PALETTES: dict[str, RenderPalette] = {
-        'black': RenderPalette(
-            jacket=(34, 38, 46, 255),
-            jacket_shadow=(15, 18, 24, 160),
-            lapel=(49, 54, 64, 230),
-            shirt=(240, 243, 247, 245),
-            shirt_shadow=(202, 208, 217, 115),
-            tie=(42, 49, 64, 235),
-            highlight=(255, 255, 255, 26),
-        ),
-        'navy': RenderPalette(
-            jacket=(35, 54, 88, 255),
-            jacket_shadow=(18, 28, 49, 165),
-            lapel=(44, 67, 108, 230),
-            shirt=(241, 244, 248, 245),
-            shirt_shadow=(198, 207, 220, 120),
-            tie=(58, 78, 126, 235),
-            highlight=(255, 255, 255, 28),
-        ),
-        'gray': RenderPalette(
-            jacket=(85, 90, 99, 255),
-            jacket_shadow=(51, 55, 63, 150),
-            lapel=(104, 110, 121, 228),
-            shirt=(241, 243, 245, 245),
-            shirt_shadow=(205, 211, 218, 120),
-            tie=(86, 94, 112, 230),
-            highlight=(255, 255, 255, 30),
-        ),
-    }
-
     def render(
         self,
-        image_size: tuple[int, int],
-        anchors: FormalWearAnchors,
-        gender: str,
+        foreground_rgba: Image.Image,
+        *,
+        face_box: dict[str, int] | None,
+        gender: str | None,
         style: str,
         color: str,
-    ) -> Image.Image:
-        canvas = Image.new('RGBA', image_size, (0, 0, 0, 0))
-        palette = self.PALETTES[color]
+    ) -> tuple[Image.Image, list[str]]:
+        canvas = foreground_rgba.convert('RGBA')
+        geometry = estimate_formal_wear_geometry(canvas.width, canvas.height, face_box, gender, style)
+        palette = self._palette(color)
 
-        self._draw_base_jacket(canvas, anchors, palette, style)
-        self._draw_shirt(canvas, anchors, palette, gender, style)
-        self._draw_lapels(canvas, anchors, palette, gender, style)
-        if gender == 'male' and style in {'standard', 'business'}:
-            self._draw_tie(canvas, anchors, palette, style)
+        clothing_layer = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
+        self._draw_body_base(clothing_layer, geometry, palette, style)
         if gender == 'female':
-            self._draw_female_opening(canvas, anchors, palette, style)
-        self._draw_depth(canvas, anchors, palette)
-        return canvas.filter(ImageFilter.GaussianBlur(radius=0.6))
+            self._draw_female_neckline(clothing_layer, geometry, palette, style)
+        else:
+            self._draw_male_shirt_and_tie(clothing_layer, geometry, palette, style)
+        self._draw_lapels(clothing_layer, geometry, palette, gender, style)
+        softened_clothing = clothing_layer.filter(ImageFilter.GaussianBlur(radius=0.7))
+        composed = Image.alpha_composite(softened_clothing, canvas)
 
-    def _draw_base_jacket(
-        self,
-        canvas: Image.Image,
-        anchors: FormalWearAnchors,
-        palette: RenderPalette,
-        style: str,
-    ) -> None:
-        draw = ImageDraw.Draw(canvas, 'RGBA')
-        width, height = canvas.size
-        hem_y = min(height - 1, int(anchors.chest_bottom_y + (anchors.face_box['height'] * 0.22)))
-        waist_inset = anchors.face_box['width'] * (0.20 if style == 'simple' else 0.12)
-        jacket = [
-            (max(0, anchors.left_shoulder_x - anchors.face_box['width'] * 0.08), anchors.shoulder_y),
-            (max(0, anchors.left_shoulder_x - anchors.face_box['width'] * 0.22), hem_y),
-            (max(0, anchors.neck_center_x - anchors.face_box['width'] * 0.55 + waist_inset), hem_y),
-            (anchors.neck_center_x, anchors.chest_top_y + anchors.face_box['height'] * 0.12),
-            (min(width - 1, anchors.neck_center_x + anchors.face_box['width'] * 0.55 - waist_inset), hem_y),
-            (min(width - 1, anchors.right_shoulder_x + anchors.face_box['width'] * 0.22), hem_y),
-            (min(width - 1, anchors.right_shoulder_x + anchors.face_box['width'] * 0.08), anchors.shoulder_y),
-            (anchors.neck_center_x + anchors.neck_width * 0.64, anchors.jacket_top_y),
-            (anchors.neck_center_x - anchors.neck_width * 0.64, anchors.jacket_top_y),
+        warnings = [
+            f'Applied lightweight formal-wear overlay gender={gender or "male"} style={style} color={color}'
         ]
-        draw.polygon(jacket, fill=palette.jacket)
+        return composed, warnings
 
-        shoulder_shadow = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
-        sdraw = ImageDraw.Draw(shoulder_shadow, 'RGBA')
-        sdraw.rounded_rectangle(
-            [
-                anchors.left_shoulder_x - anchors.face_box['width'] * 0.35,
-                anchors.shoulder_y - anchors.face_box['height'] * 0.04,
-                anchors.right_shoulder_x + anchors.face_box['width'] * 0.35,
-                anchors.shoulder_y + anchors.face_box['height'] * 0.22,
-            ],
-            radius=max(8, int(anchors.face_box['width'] * 0.12)),
-            fill=palette.jacket_shadow,
-        )
-        canvas.alpha_composite(shoulder_shadow.filter(ImageFilter.GaussianBlur(radius=14)))
+    def _palette(self, color: str) -> FormalWearPalette:
+        normalized = (color or 'black').strip().lower()
+        mapping = {
+            'black': FormalWearPalette((39, 43, 50), (18, 21, 28), (246, 248, 252), (43, 49, 68), (112, 124, 150)),
+            'navy': FormalWearPalette((41, 58, 96), (23, 34, 62), (247, 248, 252), (25, 36, 78), (122, 143, 188)),
+            'gray': FormalWearPalette((104, 108, 118), (73, 76, 86), (245, 246, 249), (90, 76, 104), (154, 157, 164)),
+        }
+        return mapping.get(normalized, mapping['black'])
 
-    def _draw_shirt(
+    def _draw_body_base(
         self,
-        canvas: Image.Image,
-        anchors: FormalWearAnchors,
-        palette: RenderPalette,
-        gender: str,
+        layer: Image.Image,
+        geometry: FormalWearGeometry,
+        palette: FormalWearPalette,
         style: str,
     ) -> None:
-        draw = ImageDraw.Draw(canvas, 'RGBA')
-        shirt_width = anchors.face_box['width'] * (0.44 if gender == 'male' else 0.54)
-        shirt_bottom = anchors.chest_bottom_y - anchors.face_box['height'] * (0.08 if style == 'simple' else 0.03)
+        draw = ImageDraw.Draw(layer, 'RGBA')
+        shoulder_drop = 8 if style == 'simple' else 0
         draw.polygon(
             [
-                (anchors.neck_center_x - shirt_width * 0.28, anchors.neck_bottom_y - anchors.face_box['height'] * 0.02),
-                (anchors.neck_center_x - shirt_width * 0.48, shirt_bottom),
-                (anchors.neck_center_x + shirt_width * 0.48, shirt_bottom),
-                (anchors.neck_center_x + shirt_width * 0.28, anchors.neck_bottom_y - anchors.face_box['height'] * 0.02),
+                (geometry.shoulder_left_x, geometry.shoulder_y + shoulder_drop),
+                (geometry.neck_left_x - 14, geometry.chest_y),
+                (geometry.head_center_x - 58, geometry.waist_y),
+                (geometry.head_center_x - 44, geometry.torso_bottom_y),
+                (geometry.shoulder_left_x - 16, geometry.torso_bottom_y),
             ],
-            fill=palette.shirt,
+            fill=palette.suit + (235,),
+        )
+        draw.polygon(
+            [
+                (geometry.shoulder_right_x, geometry.shoulder_y + shoulder_drop),
+                (geometry.neck_right_x + 14, geometry.chest_y),
+                (geometry.head_center_x + 58, geometry.waist_y),
+                (geometry.head_center_x + 44, geometry.torso_bottom_y),
+                (geometry.shoulder_right_x + 16, geometry.torso_bottom_y),
+            ],
+            fill=palette.suit + (235,),
+        )
+        draw.ellipse(
+            [
+                geometry.head_center_x - (geometry.shoulder_right_x - geometry.shoulder_left_x) * 0.42,
+                geometry.shoulder_y - 12,
+                geometry.head_center_x + (geometry.shoulder_right_x - geometry.shoulder_left_x) * 0.42,
+                geometry.waist_y + 44,
+            ],
+            fill=palette.suit_shadow + (68,),
         )
 
-        shirt_shadow = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
-        sdraw = ImageDraw.Draw(shirt_shadow, 'RGBA')
-        sdraw.ellipse(
+    def _draw_male_shirt_and_tie(
+        self,
+        layer: Image.Image,
+        geometry: FormalWearGeometry,
+        palette: FormalWearPalette,
+        style: str,
+    ) -> None:
+        draw = ImageDraw.Draw(layer, 'RGBA')
+        shirt_width = (geometry.neck_right_x - geometry.neck_left_x) * 1.22
+        shirt_bottom = geometry.waist_y + (24 if style == 'business' else 8)
+        draw.polygon(
             [
-                anchors.neck_center_x - shirt_width * 0.62,
-                anchors.neck_top_y,
-                anchors.neck_center_x + shirt_width * 0.62,
-                anchors.neck_bottom_y + anchors.face_box['height'] * 0.25,
+                (geometry.head_center_x, geometry.chin_y - 3),
+                (geometry.head_center_x - shirt_width * 0.52, geometry.chest_y),
+                (geometry.head_center_x - shirt_width * 0.22, shirt_bottom),
+                (geometry.head_center_x + shirt_width * 0.22, shirt_bottom),
+                (geometry.head_center_x + shirt_width * 0.52, geometry.chest_y),
             ],
-            fill=palette.shirt_shadow,
+            fill=palette.shirt + (246,),
         )
-        canvas.alpha_composite(shirt_shadow.filter(ImageFilter.GaussianBlur(radius=7)))
+
+        tie_top = geometry.chin_y + 10
+        tie_width = 18 if style == 'simple' else 24
+        tie_bottom = geometry.waist_y + (18 if style == 'business' else -4)
+        draw.polygon(
+            [
+                (geometry.head_center_x, tie_top),
+                (geometry.head_center_x - tie_width, geometry.chest_y + 28),
+                (geometry.head_center_x - tie_width * 0.66, tie_bottom - 18),
+                (geometry.head_center_x, tie_bottom),
+                (geometry.head_center_x + tie_width * 0.66, tie_bottom - 18),
+                (geometry.head_center_x + tie_width, geometry.chest_y + 28),
+            ],
+            fill=palette.tie + (220,),
+        )
+        draw.polygon(
+            [
+                (geometry.head_center_x, tie_top - 8),
+                (geometry.head_center_x - tie_width * 0.86, tie_top + 12),
+                (geometry.head_center_x, tie_top + 28),
+                (geometry.head_center_x + tie_width * 0.86, tie_top + 12),
+            ],
+            fill=palette.tie + (236,),
+        )
+
+    def _draw_female_neckline(
+        self,
+        layer: Image.Image,
+        geometry: FormalWearGeometry,
+        palette: FormalWearPalette,
+        style: str,
+    ) -> None:
+        draw = ImageDraw.Draw(layer, 'RGBA')
+        blouse_width = (geometry.neck_right_x - geometry.neck_left_x) * (1.95 if style == 'business' else 1.75)
+        neckline_depth = 44 if style == 'simple' else 64
+        draw.rounded_rectangle(
+            [
+                geometry.head_center_x - blouse_width / 2,
+                geometry.chin_y + 10,
+                geometry.head_center_x + blouse_width / 2,
+                geometry.waist_y + 16,
+            ],
+            radius=28,
+            fill=palette.shirt + (244,),
+        )
+        draw.polygon(
+            [
+                (geometry.head_center_x - blouse_width * 0.24, geometry.chin_y + 10),
+                (geometry.head_center_x, geometry.chin_y + neckline_depth),
+                (geometry.head_center_x + blouse_width * 0.24, geometry.chin_y + 10),
+            ],
+            fill=(0, 0, 0, 0),
+        )
+        draw.ellipse(
+            [
+                geometry.head_center_x - blouse_width * 0.18,
+                geometry.chin_y + 16,
+                geometry.head_center_x + blouse_width * 0.18,
+                geometry.chin_y + neckline_depth + 10,
+            ],
+            fill=(0, 0, 0, 0),
+        )
 
     def _draw_lapels(
         self,
-        canvas: Image.Image,
-        anchors: FormalWearAnchors,
-        palette: RenderPalette,
-        gender: str,
+        layer: Image.Image,
+        geometry: FormalWearGeometry,
+        palette: FormalWearPalette,
+        gender: str | None,
         style: str,
     ) -> None:
-        draw = ImageDraw.Draw(canvas, 'RGBA')
-        lapel_drop = anchors.face_box['height'] * (0.56 if style == 'business' else 0.48)
-        inner_gap = anchors.lapel_inner_gap * (1.08 if gender == 'female' else 1.0)
-        outer = anchors.lapel_outer_span
+        draw = ImageDraw.Draw(layer, 'RGBA')
+        lapel_alpha = 232 if style == 'business' else 214
+        lapel_top = geometry.chin_y + (6 if gender == 'female' else 2)
+        lapel_bottom = geometry.chest_y + (42 if style == 'business' else 26)
+        inner_spread = 14 if style == 'simple' else 22
+        outer_spread = 54 if gender == 'female' else 62
 
-        left_lapel = [
-            (anchors.neck_center_x - inner_gap, anchors.jacket_top_y),
-            (anchors.neck_center_x - outer, anchors.chest_top_y + anchors.face_box['height'] * 0.22),
-            (anchors.neck_center_x - anchors.face_box['width'] * 0.16, anchors.chest_top_y + lapel_drop),
-            (anchors.neck_center_x - anchors.face_box['width'] * 0.02, anchors.neck_bottom_y + anchors.face_box['height'] * 0.05),
-        ]
-        right_lapel = [
-            (anchors.neck_center_x + inner_gap, anchors.jacket_top_y),
-            (anchors.neck_center_x + outer, anchors.chest_top_y + anchors.face_box['height'] * 0.22),
-            (anchors.neck_center_x + anchors.face_box['width'] * 0.16, anchors.chest_top_y + lapel_drop),
-            (anchors.neck_center_x + anchors.face_box['width'] * 0.02, anchors.neck_bottom_y + anchors.face_box['height'] * 0.05),
-        ]
-        draw.polygon(left_lapel, fill=palette.lapel)
-        draw.polygon(right_lapel, fill=palette.lapel)
-
-        highlight = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
-        hdraw = ImageDraw.Draw(highlight, 'RGBA')
-        hdraw.line(left_lapel[:3], fill=palette.highlight, width=max(2, int(anchors.face_box['width'] * 0.03)))
-        hdraw.line(right_lapel[:3], fill=palette.highlight, width=max(2, int(anchors.face_box['width'] * 0.03)))
-        canvas.alpha_composite(highlight.filter(ImageFilter.GaussianBlur(radius=2)))
-
-    def _draw_tie(
-        self,
-        canvas: Image.Image,
-        anchors: FormalWearAnchors,
-        palette: RenderPalette,
-        style: str,
-    ) -> None:
-        draw = ImageDraw.Draw(canvas, 'RGBA')
-        knot_half = anchors.face_box['width'] * (0.09 if style == 'business' else 0.08)
-        tie_half = anchors.face_box['width'] * (0.08 if style == 'business' else 0.06)
-        knot = [
-            (anchors.neck_center_x, anchors.tie_top_y),
-            (anchors.neck_center_x - knot_half, anchors.tie_top_y + anchors.face_box['height'] * 0.08),
-            (anchors.neck_center_x, anchors.tie_top_y + anchors.face_box['height'] * 0.16),
-            (anchors.neck_center_x + knot_half, anchors.tie_top_y + anchors.face_box['height'] * 0.08),
-        ]
-        blade = [
-            (anchors.neck_center_x - tie_half, anchors.tie_top_y + anchors.face_box['height'] * 0.14),
-            (anchors.neck_center_x - tie_half * 0.62, anchors.tie_bottom_y),
-            (anchors.neck_center_x, anchors.tie_bottom_y + anchors.face_box['height'] * 0.12),
-            (anchors.neck_center_x + tie_half * 0.62, anchors.tie_bottom_y),
-            (anchors.neck_center_x + tie_half, anchors.tie_top_y + anchors.face_box['height'] * 0.14),
-        ]
-        draw.polygon(knot, fill=palette.tie)
-        draw.polygon(blade, fill=palette.tie)
-
-    def _draw_female_opening(
-        self,
-        canvas: Image.Image,
-        anchors: FormalWearAnchors,
-        palette: RenderPalette,
-        style: str,
-    ) -> None:
-        overlay = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
-        mask = Image.new('L', canvas.size, 0)
-        draw = ImageDraw.Draw(mask)
-        scoop_depth = anchors.face_box['height'] * (0.34 if style == 'simple' else 0.28)
-        draw.ellipse(
+        draw.polygon(
             [
-                anchors.neck_center_x - anchors.face_box['width'] * 0.40,
-                anchors.neck_top_y + anchors.face_box['height'] * 0.02,
-                anchors.neck_center_x + anchors.face_box['width'] * 0.40,
-                anchors.neck_bottom_y + scoop_depth,
+                (geometry.neck_left_x - 4, lapel_top),
+                (geometry.head_center_x - inner_spread, lapel_bottom),
+                (geometry.head_center_x - outer_spread, lapel_top + 26),
+                (geometry.neck_left_x - 18, lapel_top - 3),
             ],
-            fill=220,
+            fill=palette.suit_shadow + (lapel_alpha,),
         )
-        mask = mask.filter(ImageFilter.GaussianBlur(radius=6))
-        overlay.paste(Image.new('RGBA', canvas.size, palette.shirt), (0, 0), mask)
-        canvas.alpha_composite(overlay)
-
-    def _draw_depth(self, canvas: Image.Image, anchors: FormalWearAnchors, _palette: RenderPalette) -> None:
-        depth = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(depth, 'RGBA')
-        draw.ellipse(
+        draw.polygon(
             [
-                anchors.neck_center_x - anchors.face_box['width'] * 0.52,
-                anchors.neck_top_y,
-                anchors.neck_center_x + anchors.face_box['width'] * 0.52,
-                anchors.neck_bottom_y + anchors.face_box['height'] * 0.16,
+                (geometry.neck_right_x + 4, lapel_top),
+                (geometry.head_center_x + inner_spread, lapel_bottom),
+                (geometry.head_center_x + outer_spread, lapel_top + 26),
+                (geometry.neck_right_x + 18, lapel_top - 3),
             ],
-            fill=(0, 0, 0, 52),
+            fill=palette.suit_shadow + (lapel_alpha,),
         )
-        draw.rectangle(
+        draw.line(
             [
-                anchors.left_shoulder_x - anchors.face_box['width'] * 0.18,
-                anchors.shoulder_y,
-                anchors.right_shoulder_x + anchors.face_box['width'] * 0.18,
-                anchors.chest_bottom_y + anchors.face_box['height'] * 0.10,
+                (geometry.head_center_x - inner_spread, lapel_bottom),
+                (geometry.head_center_x - outer_spread + 8, lapel_top + 28),
             ],
-            fill=(255, 255, 255, 16),
+            fill=palette.accent + (186,),
+            width=2,
         )
-        canvas.alpha_composite(depth.filter(ImageFilter.GaussianBlur(radius=10)))
+        draw.line(
+            [
+                (geometry.head_center_x + inner_spread, lapel_bottom),
+                (geometry.head_center_x + outer_spread - 8, lapel_top + 28),
+            ],
+            fill=palette.accent + (186,),
+            width=2,
+        )
