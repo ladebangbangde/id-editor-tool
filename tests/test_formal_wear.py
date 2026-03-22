@@ -20,7 +20,7 @@ def test_formal_wear_service_normalizes_inputs() -> None:
     class DummyProcessor:
         def generate_from_path(self, **kwargs):
             assert kwargs['image_path'] == '/app/uploads/original/source.jpg'
-            assert kwargs['background_color'] == 'red'
+            assert kwargs['background_color'] == 'white'
             assert kwargs['size_key'] == service.settings.default_size_key
             assert kwargs['enhance'] is True
             assert kwargs['save_output'] is True
@@ -32,7 +32,7 @@ def test_formal_wear_service_normalizes_inputs() -> None:
         image_path='/app/uploads/original/source.jpg',
         gender='女',
         style='business',
-        color='红色',
+        color='navy',
         enhance=True,
         save_output=True,
     )
@@ -41,8 +41,34 @@ def test_formal_wear_service_normalizes_inputs() -> None:
     assert result.taskId == 'gen_test_001'
     assert result.gender == 'female'
     assert result.style == 'business'
-    assert result.color == 'red'
+    assert result.color == 'navy'
+    assert any('requested clothing color=navy' in warning for warning in result.warnings)
     assert any('style=business' in warning for warning in result.warnings)
+
+
+def test_formal_wear_service_preserves_black_gray_color_without_using_it_as_background() -> None:
+    service = FormalWearService()
+    seen_background_colors: list[str] = []
+
+    class DummyProcessor:
+        def generate_from_path(self, **kwargs):
+            seen_background_colors.append(kwargs['background_color'])
+            return DummyGenerateResult()
+
+    service.processor = DummyProcessor()
+
+    for requested_color in ('black', 'gray'):
+        result = service.create_from_path(
+            image_path='/app/uploads/original/source.jpg',
+            gender='male',
+            style='formal',
+            color=requested_color,
+            enhance=False,
+            save_output=True,
+        )
+        assert result.color == requested_color
+
+    assert seen_background_colors == ['white', 'white']
 
 
 def test_formal_wear_route_supports_image_path(monkeypatch) -> None:
