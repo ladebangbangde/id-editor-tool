@@ -8,6 +8,7 @@
 - `POST /detect`：支持上传图片或传入共享图片路径做人脸基础检测。
 - `POST /generate`：支持上传原图或传入共享路径生成证件照预览图与高清图。
 - `POST /layout`：基于原图/共享路径/已生成证件照生成 6 寸排版图。
+- `POST /formal-wear`：兼容 server 当前一键换装联调入口，复用现有证件照生成主链路返回预览图与高清图。
 - `/uploads/...`：直接访问共享上传目录中的静态结果。
 - 自动按日期 + 任务 ID 保存输出，便于肉眼查看效果。
 - 支持基础调试中间文件保存：前景图、透明裁剪图。
@@ -325,7 +326,45 @@ HD_QUALITY=95
 - `saveOutput`
 - `paper`，当前支持 `6inch`
 
-### 5. 静态输出访问
+### 5. 一键换装兼容接口
+
+`POST /formal-wear`
+
+表单字段：
+
+- `file`：原图上传文件，可选
+- `imagePath`：共享目录中的原图绝对路径，可选
+- `gender`
+- `style`
+- `color`
+- `enhance`
+- `saveOutput`
+
+说明：
+
+- 当前该接口优先用于兼容 `id-editor-server` 已上线的 `POST /formal-wear` 调用路径。
+- 内部复用现有 `/generate` 主链路，不会替换或删除原有证件照接口。
+- `color` 会映射到当前工具已支持的背景色能力；`style` / `gender` 会保留在返回结构中，便于 server 继续透传给前端。
+
+示例返回重点字段：
+
+```json
+{
+  "success": true,
+  "message": "ok",
+  "data": {
+    "taskId": "gen_20260322_120000_ab12cd34",
+    "previewUrl": "/uploads/preview/20260322/.../id_photo_preview.jpg",
+    "hdUrl": "/uploads/hd/20260322/.../id_photo_hd.png",
+    "gender": "female",
+    "style": "formal",
+    "color": "blue",
+    "warnings": []
+  }
+}
+```
+
+### 6. 静态输出访问
 
 生成完成后，可直接访问：
 
@@ -397,6 +436,18 @@ curl -X POST http://127.0.0.1:8000/layout \
   -F "sizeKey=one_inch" \
   -F "backgroundColor=blue" \
   -F "paper=6inch" \
+  -F "saveOutput=true"
+```
+
+### formal-wear
+
+```bash
+curl -X POST http://127.0.0.1:8000/formal-wear \
+  -F "imagePath=/app/uploads/original/test.jpg" \
+  -F "gender=female" \
+  -F "style=formal" \
+  -F "color=blue" \
+  -F "enhance=false" \
   -F "saveOutput=true"
 ```
 
