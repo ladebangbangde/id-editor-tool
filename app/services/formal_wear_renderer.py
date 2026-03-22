@@ -34,13 +34,17 @@ class FormalWearRenderer:
         underlay_layer = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
         self._draw_neck_bridge(underlay_layer, geometry, skin_tone)
         if gender == 'female':
-            self._draw_female_jacket(clothing_layer, geometry, palette, style)
-            self._draw_female_inner_top(clothing_layer, geometry, palette, skin_tone, style)
+            if style == 'standard' and color == 'black':
+                self._draw_female_structured_suit(clothing_layer, geometry, palette)
+            else:
+                self._draw_female_jacket(clothing_layer, geometry, palette, style)
+                self._draw_female_inner_top(clothing_layer, geometry, palette, skin_tone, style)
         else:
             self._draw_male_jacket(clothing_layer, geometry, palette, style)
             self._draw_male_shirt_and_tie(clothing_layer, geometry, palette, style)
-        self._draw_lapels(clothing_layer, geometry, palette, gender, style)
-        self._draw_seam_shadows(clothing_layer, geometry, palette)
+        if not (gender == 'female' and style == 'standard' and color == 'black'):
+            self._draw_lapels(clothing_layer, geometry, palette, gender, style)
+            self._draw_seam_shadows(clothing_layer, geometry, palette)
 
         softened_clothing = clothing_layer.filter(ImageFilter.GaussianBlur(radius=0.9))
         front_portrait = self._extract_front_portrait(canvas, geometry)
@@ -101,14 +105,160 @@ class FormalWearRenderer:
 
     def _draw_neck_bridge(self, layer: Image.Image, geometry: FormalWearGeometry, skin_tone: tuple[int, int, int]) -> None:
         draw = ImageDraw.Draw(layer, 'RGBA')
-        draw.polygon(
+        bridge_width = (geometry.neck_right_x - geometry.neck_left_x) * 0.88
+        draw.rounded_rectangle(
             [
-                (geometry.neck_left_x + 4, geometry.neck_top_y),
-                (geometry.neck_right_x - 4, geometry.neck_top_y),
-                (geometry.neck_right_x - 10, geometry.neck_base_y + 6),
-                (geometry.neck_left_x + 10, geometry.neck_base_y + 6),
+                geometry.head_center_x - bridge_width / 2,
+                geometry.neck_top_y + 2,
+                geometry.head_center_x + bridge_width / 2,
+                geometry.neck_base_y + 10,
             ],
-            fill=skin_tone + (225,),
+            radius=14,
+            fill=skin_tone + (212,),
+        )
+
+    def _curve(self, p0: tuple[float, float], p1: tuple[float, float], p2: tuple[float, float], steps: int = 12) -> list[tuple[float, float]]:
+        points: list[tuple[float, float]] = []
+        for index in range(steps + 1):
+            t = index / steps
+            mt = 1 - t
+            x = mt * mt * p0[0] + 2 * mt * t * p1[0] + t * t * p2[0]
+            y = mt * mt * p0[1] + 2 * mt * t * p1[1] + t * t * p2[1]
+            points.append((x, y))
+        return points
+
+    def _draw_female_structured_suit(self, layer: Image.Image, geometry: FormalWearGeometry, palette: FormalWearPalette) -> None:
+        draw = ImageDraw.Draw(layer, 'RGBA')
+        shoulder_span = geometry.shoulder_right_x - geometry.shoulder_left_x
+        body_left = geometry.head_center_x - shoulder_span * 0.34
+        body_right = geometry.head_center_x + shoulder_span * 0.34
+        body_top = min(geometry.shoulder_left_y, geometry.shoulder_right_y) + 8
+        body_bottom = geometry.torso_bottom_y
+
+        draw.rounded_rectangle(
+            [body_left, body_top, body_right, body_bottom],
+            radius=34,
+            fill=palette.suit + (242,),
+        )
+        shoulder_radius = shoulder_span * 0.17
+        draw.ellipse(
+            [
+                geometry.shoulder_left_x - shoulder_radius * 0.20,
+                geometry.shoulder_left_y - shoulder_radius * 0.62,
+                geometry.shoulder_left_x + shoulder_radius * 1.65,
+                geometry.shoulder_left_y + shoulder_radius * 0.95,
+            ],
+            fill=palette.suit + (242,),
+        )
+        draw.ellipse(
+            [
+                geometry.shoulder_right_x - shoulder_radius * 1.65,
+                geometry.shoulder_right_y - shoulder_radius * 0.62,
+                geometry.shoulder_right_x + shoulder_radius * 0.20,
+                geometry.shoulder_right_y + shoulder_radius * 0.95,
+            ],
+            fill=palette.suit + (242,),
+        )
+
+        blouse_top = geometry.neck_base_y + 2
+        blouse_bottom = geometry.waist_y + 18
+        blouse_width = (geometry.collar_right_x - geometry.collar_left_x) * 1.75
+        blouse_layer = Image.new('RGBA', layer.size, (0, 0, 0, 0))
+        blouse_draw = ImageDraw.Draw(blouse_layer, 'RGBA')
+        blouse_draw.rounded_rectangle(
+            [
+                geometry.head_center_x - blouse_width / 2,
+                blouse_top,
+                geometry.head_center_x + blouse_width / 2,
+                blouse_bottom,
+            ],
+            radius=28,
+            fill=palette.shirt + (246,),
+        )
+        neckline = self._curve(
+            (geometry.collar_left_x + 2, blouse_top + 4),
+            (geometry.head_center_x, blouse_top + 46),
+            (geometry.collar_right_x - 2, blouse_top + 4),
+            steps=18,
+        )
+        neckline_mask = Image.new('L', layer.size, 0)
+        neckline_draw = ImageDraw.Draw(neckline_mask)
+        neckline_draw.polygon(
+            neckline
+            + [
+                (geometry.collar_right_x - 8, geometry.neck_top_y - 6),
+                (geometry.collar_left_x + 8, geometry.neck_top_y - 6),
+            ],
+            fill=255,
+        )
+        blouse_alpha = blouse_layer.getchannel('A')
+        blouse_alpha = ImageChops.subtract(blouse_alpha, neckline_mask)
+        blouse_layer.putalpha(blouse_alpha)
+        layer.alpha_composite(blouse_layer)
+
+        left_panel = self._curve(
+            (geometry.shoulder_left_x + 10, geometry.shoulder_left_y + 4),
+            (geometry.head_center_x - shoulder_span * 0.35, geometry.chest_y + 6),
+            (geometry.head_center_x - shoulder_span * 0.24, body_bottom),
+            steps=12,
+        )
+        left_inner = self._curve(
+            (geometry.head_center_x - 20, body_bottom),
+            (geometry.head_center_x - 30, geometry.chest_y + 54),
+            (geometry.collar_left_x + 2, geometry.neck_base_y + 4),
+            steps=10,
+        )
+        draw.polygon(left_panel + left_inner + [(geometry.shoulder_left_x + 4, geometry.shoulder_left_y + 4)], fill=palette.suit_dark + (244,))
+
+        right_panel = self._curve(
+            (geometry.shoulder_right_x - 10, geometry.shoulder_right_y + 4),
+            (geometry.head_center_x + shoulder_span * 0.35, geometry.chest_y + 6),
+            (geometry.head_center_x + shoulder_span * 0.24, body_bottom),
+            steps=12,
+        )
+        right_inner = self._curve(
+            (geometry.head_center_x + 20, body_bottom),
+            (geometry.head_center_x + 30, geometry.chest_y + 54),
+            (geometry.collar_right_x - 2, geometry.neck_base_y + 4),
+            steps=10,
+        )
+        draw.polygon(right_panel + right_inner + [(geometry.shoulder_right_x - 4, geometry.shoulder_right_y + 4)], fill=palette.suit_dark + (244,))
+
+        left_lapel = [
+            (geometry.collar_left_x + 2, geometry.neck_base_y + 4),
+            (geometry.head_center_x - 16, geometry.chest_y + 20),
+            (geometry.head_center_x - 34, geometry.chest_y + 4),
+            (geometry.collar_left_x - 12, geometry.neck_base_y + 10),
+        ]
+        right_lapel = [
+            (geometry.collar_right_x - 2, geometry.neck_base_y + 4),
+            (geometry.head_center_x + 16, geometry.chest_y + 20),
+            (geometry.head_center_x + 34, geometry.chest_y + 4),
+            (geometry.collar_right_x + 12, geometry.neck_base_y + 10),
+        ]
+        draw.polygon(left_lapel, fill=palette.suit + (236,))
+        draw.polygon(right_lapel, fill=palette.suit + (236,))
+        draw.line(
+            [(geometry.collar_left_x + 2, geometry.neck_base_y + 4), (geometry.head_center_x - 18, geometry.chest_y + 20)],
+            fill=palette.suit_light + (150,),
+            width=2,
+        )
+        draw.line(
+            [(geometry.collar_right_x - 2, geometry.neck_base_y + 4), (geometry.head_center_x + 18, geometry.chest_y + 20)],
+            fill=palette.suit_light + (150,),
+            width=2,
+        )
+        draw.arc(
+            [
+                geometry.head_center_x - blouse_width * 0.24,
+                blouse_top + 6,
+                geometry.head_center_x + blouse_width * 0.24,
+                blouse_top + 54,
+            ],
+            start=195,
+            end=345,
+            fill=(226, 228, 233, 180),
+            width=2,
         )
 
     def _draw_male_jacket(self, layer: Image.Image, geometry: FormalWearGeometry, palette: FormalWearPalette, style: str) -> None:
