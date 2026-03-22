@@ -71,3 +71,15 @@ class LandmarkUnstableError(AppError):
 class BadCompositionError(AppError):
     def __init__(self, message: str = 'Image composition is not safe for ID photo cropping', details: Any = None):
         super().__init__('BAD_COMPOSITION', message, 422, details)
+
+
+
+class ImageTooBlurryError(AppError):
+    def __init__(self, message: str = 'Image is too blurry for formal wear generation', details: Any = None):
+        super().__init__('IMAGE_TOO_BLURRY', message, 422, details)
+
+
+class ShoulderNeckIncompleteError(AppError):
+    def __init__(self, message: str = 'Shoulder and neck area is incomplete for formal wear generation', details: Any = None):
+        super().__init__('SHOULDER_NECK_INCOMPLETE', message, 422, details)
+
