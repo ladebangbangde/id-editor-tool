@@ -102,7 +102,7 @@ def test_formal_wear_service_generates_real_overlay_outputs(tmp_path: Path) -> N
     assert result.hdPath.endswith('formal_wear_hd.png')
     assert Path(result.previewPath).exists()
     assert Path(result.hdPath).exists()
-    assert any('lightweight formal-wear overlay gender=female style=business color=navy' in warning for warning in result.warnings)
+    assert any('refined formal-wear overlay gender=female style=business color=navy' in warning for warning in result.warnings)
 
 
 def test_formal_wear_route_supports_image_path(monkeypatch) -> None:
