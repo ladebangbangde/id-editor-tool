@@ -113,11 +113,23 @@ class PhotoProcessor:
     def _raise_detect_failure(self, detect_result: FaceDetectionResult) -> None:
         details = self._build_detect_data(detect_result).model_dump(by_alias=True)
         code = detect_result.reason_codes[0] if detect_result.reason_codes else 'NO_FACE_DETECTED'
-        message = '当前照片不适合作为证件照原图'
+        message = '当前照片暂不适合进入证件照处理流程'
         if code == 'NO_FACE_DETECTED':
             raise NoFaceDetectedError(message, details)
         if code == 'MULTIPLE_FACES_DETECTED':
             raise MultipleFacesDetectedError(message, details)
+        if code in {'SEVERE_POSE', 'INVALID_POSE'}:
+            raise InvalidPoseError(message, details)
+        if code in {'IMAGE_TOO_BLURRY', 'LANDMARK_UNSTABLE'}:
+            raise LandmarkUnstableError(message, details)
+        if code in {'HEAD_SHOULDER_INCOMPLETE', 'FACE_RATIO_INVALID', 'BAD_COMPOSITION'}:
+            raise BadCompositionError(message, details)
+        if code in {'EXTREME_LIGHTING', 'BAD_LIGHTING'}:
+            raise BadLightingError(message, details)
+        if code == 'RESOLUTION_TOO_LOW':
+            raise InvalidImageError(message, details)
+        if code == 'NOT_SUITABLE_PORTRAIT':
+            raise InvalidImageError(message, details)
         if code == 'HEAD_ACCESSORY':
             raise HeadAccessoryError(message, details)
         if code == 'HAND_OCCLUSION':
@@ -126,14 +138,6 @@ class PhotoProcessor:
             raise EyeOccludedError(message, details)
         if code == 'FACE_OCCLUDED':
             raise FaceOccludedError(message, details)
-        if code == 'INVALID_POSE':
-            raise InvalidPoseError(message, details)
-        if code == 'LANDMARK_UNSTABLE':
-            raise LandmarkUnstableError(message, details)
-        if code == 'BAD_COMPOSITION':
-            raise BadCompositionError(message, details)
-        if code == 'BAD_LIGHTING':
-            raise BadLightingError(message, details)
         raise InvalidImageError(message, details)
 
     def _size_info(self, spec: PhotoSpec) -> SizeInfo:

@@ -10,3 +10,5 @@ onnxruntime==1.23.2
 scikit-image==0.25.2
 python-dotenv==1.0.1
 requests==2.32.5
+opencv-python-headless==4.11.0.86
+mediapipe==0.10.14
