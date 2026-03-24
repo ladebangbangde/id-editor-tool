@@ -43,7 +43,8 @@ async def app_error_handler(_: Request, exc: AppError) -> JSONResponse:
         status_code=exc.status_code,
         content=ApiResponse(
             success=False,
-            message='error',
+            message=exc.message,
+            data=exc.details if isinstance(exc.details, dict) else None,
             error=ErrorBody(code=exc.code, message=exc.message, details=exc.details),
         ).model_dump(),
     )

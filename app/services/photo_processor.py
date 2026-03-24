@@ -6,9 +6,12 @@ from PIL import Image
 
 from app.core.config import get_settings
 from app.core.exceptions import (
+    BadLightingError,
     BadCompositionError,
     EyeOccludedError,
     FaceOccludedError,
+    HandOcclusionError,
+    HeadAccessoryError,
     InvalidArgumentError,
     InvalidImageError,
     InvalidPoseError,
@@ -72,7 +75,14 @@ class PhotoProcessor:
             status=result.status,
             resultLevel=result.result_level,
             canGenerate=result.can_generate,
-            reasons=result.reasons,
+            reasons=[
+                {
+                    'code': reason.code,
+                    'title': reason.title,
+                    'detail': reason.detail,
+                }
+                for reason in result.reasons
+            ],
             suggestions=result.suggestions,
             reasonCodes=result.reason_codes,
             warnings=result.warnings,
@@ -103,12 +113,15 @@ class PhotoProcessor:
     def _raise_detect_failure(self, detect_result: FaceDetectionResult) -> None:
         details = self._build_detect_data(detect_result).model_dump(by_alias=True)
         code = detect_result.reason_codes[0] if detect_result.reason_codes else 'NO_FACE_DETECTED'
-        failed_messages = [issue.message for issue in detect_result.issues if issue.severity == 'FAILED']
-        message = failed_messages[0] if failed_messages else 'Source image is not suitable for ID photo generation'
+        message = '当前照片不适合作为证件照原图'
         if code == 'NO_FACE_DETECTED':
             raise NoFaceDetectedError(message, details)
         if code == 'MULTIPLE_FACES_DETECTED':
             raise MultipleFacesDetectedError(message, details)
+        if code == 'HEAD_ACCESSORY':
+            raise HeadAccessoryError(message, details)
+        if code == 'HAND_OCCLUSION':
+            raise HandOcclusionError(message, details)
         if code == 'EYE_OCCLUDED':
             raise EyeOccludedError(message, details)
         if code == 'FACE_OCCLUDED':
@@ -119,7 +132,9 @@ class PhotoProcessor:
             raise LandmarkUnstableError(message, details)
         if code == 'BAD_COMPOSITION':
             raise BadCompositionError(message, details)
-        raise InvalidImageError(message)
+        if code == 'BAD_LIGHTING':
+            raise BadLightingError(message, details)
+        raise InvalidImageError(message, details)
 
     def _size_info(self, spec: PhotoSpec) -> SizeInfo:
         return SizeInfo(
