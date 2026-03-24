@@ -6,6 +6,7 @@ from PIL import Image
 from app.core.config import get_settings
 from app.core.exceptions import InvalidArgumentError
 from app.schemas.common import FileInfo
+from app.schemas.detect import DetectData
 from app.schemas.formal_wear import FormalWearData
 from app.services.formal_wear_geometry import compute_crop_box, project_face_box
 from app.services.formal_wear_renderer import FormalWearRenderer
@@ -78,6 +79,9 @@ class FormalWearService:
         style: str,
         color: str,
         warnings: list[str],
+        detect_summary: DetectData,
+        preview_meta: dict[str, int | str],
+        hd_meta: dict[str, int | str],
     ) -> FormalWearData:
         return FormalWearData(
             taskId=task_id,
@@ -89,25 +93,46 @@ class FormalWearService:
             warnings=warnings,
             previewPath=preview_info.path,
             hdPath=hd_info.path,
+            detectSummary=detect_summary,
+            primaryIssue=detect_summary.primaryIssue,
+            primaryMessage=detect_summary.primaryMessage,
+            secondaryWarnings=detect_summary.secondaryWarnings,
+            qualityStatus=detect_summary.qualityStatus,
+            qualityMessage=detect_summary.qualityMessage,
+            previewWidth=int(preview_meta['width']),
+            previewHeight=int(preview_meta['height']),
+            previewFormat=str(preview_meta['format']),
+            previewQuality=int(preview_meta['quality']),
+            hdWidth=int(hd_meta['width']),
+            hdHeight=int(hd_meta['height']),
+            hdFormat=str(hd_meta['format']),
+            hdQuality=int(hd_meta['quality']),
         )
 
-    def _save_outputs(self, task_id: str, dressed_rgba: Image.Image, enhance: bool, save_output: bool) -> tuple[FileInfo, FileInfo]:
+    def _save_outputs(
+        self,
+        task_id: str,
+        dressed_rgba: Image.Image,
+        enhance: bool,
+        save_output: bool,
+    ) -> tuple[FileInfo, FileInfo, dict[str, int | str], dict[str, int | str]]:
         hd_image = self.processor.background.apply(dressed_rgba, self.FALLBACK_BACKGROUND_COLOR)
         if enhance:
             hd_image = self.processor.enhancer.enhance(hd_image)
 
-        preview_image = hd_image.copy()
-        preview_image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        preview_image, preview_quality = self.processor._build_preview_image(hd_image)
 
         hd_path = self.processor.storage.hd_path(task_id, 'formal_wear_hd.png')
         preview_path = self.processor.storage.preview_path(task_id, 'formal_wear_preview.jpg')
         if save_output:
             save_image(hd_image, hd_path)
-            save_image(preview_image, preview_path, quality=self.settings.preview_quality)
+            save_image(preview_image, preview_path, quality=preview_quality)
 
         hd_info = self.processor._file_info(hd_path) if save_output else FileInfo(path='', url='')
         preview_info = self.processor._file_info(preview_path) if save_output else FileInfo(path='', url='')
-        return preview_info, hd_info
+        preview_meta = {'width': preview_image.width, 'height': preview_image.height, 'format': 'JPEG', 'quality': preview_quality}
+        hd_meta = {'width': hd_image.width, 'height': hd_image.height, 'format': 'PNG', 'quality': 100}
+        return preview_info, hd_info, preview_meta, hd_meta
 
     def _render_formal_wear(
         self,
@@ -122,6 +147,7 @@ class FormalWearService:
         detect_result = self.processor.detector.detect(image)
         if not detect_result.can_generate:
             self.processor._raise_detect_failure(detect_result)
+        detect_summary = self.processor._build_detect_data(detect_result)
 
         spec = get_photo_spec(self.settings.default_size_key)
         rgba_foreground = self.processor.segmenter.remove_background(image)
@@ -144,11 +170,9 @@ class FormalWearService:
             if self.settings.save_intermediate:
                 save_image(dressed_rgba, self.processor.storage.temp_path(task_id, 'formal_wear_rgba.png'))
 
-        preview_info, hd_info = self._save_outputs(task_id, dressed_rgba, enhance, save_output)
+        preview_info, hd_info, preview_meta, hd_meta = self._save_outputs(task_id, dressed_rgba, enhance, save_output)
         warnings = list(detect_result.warnings) + render_warnings
-        warnings.append(
-            f'Formal wear rendered via lightweight vector overlay with fallback backgroundColor={self.FALLBACK_BACKGROUND_COLOR}'
-        )
+        warnings.append('换装结果基于轻量矢量正装渲染，建议优先使用高清图用于正式提交')
         return self._build_response(
             task_id=task_id,
             preview_info=preview_info,
@@ -157,6 +181,9 @@ class FormalWearService:
             style=style,
             color=color,
             warnings=warnings,
+            detect_summary=detect_summary,
+            preview_meta=preview_meta,
+            hd_meta=hd_meta,
         )
 
     async def create_from_upload(

@@ -5,8 +5,10 @@
 ## 功能列表
 
 - `GET /health`：健康检查。
-- `POST /detect`：支持上传图片或传入共享图片路径做人脸基础检测。
+- `POST /detect`：支持上传图片或传入共享图片路径做 CPU 友好的预检（PASS/WARNING/FAIL）。
 - `POST /generate`：支持上传原图或传入共享路径生成证件照预览图与高清图。
+- `POST /photo/precheck`：独立的照片预检接口，返回结构化指标与风险提示。
+- `POST /photo/process`：`/generate` 的兼容别名，处理前自动执行预检。
 - `POST /layout`：基于原图/共享路径/已生成证件照生成 6 寸排版图。
 - `POST /formal-wear`：兼容 server 当前一键换装联调入口，使用纯代码绘制的轻量正装图层生成预览图与高清图。
 - `/uploads/...`：直接访问共享上传目录中的静态结果。
@@ -18,12 +20,15 @@
 
 第一阶段优先保证“**可运行、可测试、可看到效果**”的主链路打通：
 
-- 人脸检测：`scikit-image` 内置 Haar Cascade（离线运行）。
+- 人脸检测：`MediaPipe Face Detection`（CPU，无需 GPU）。
 - 抠图：`rembg` + `onnxruntime` 本地离线推理。
 - 换底：Pillow 合成白/蓝/红底。
 - 标准裁剪：基于人脸框和尺寸比例的规则裁剪。
 - 增强：轻量亮度/对比度/锐化处理。
 - 排版：6 寸纸张打印参考图。
+- 预检指标：`OpenCV` 计算清晰度、亮度、边缘密度等可解释指标。
+- 质量提示：提供 `primaryIssue/primaryMessage/secondaryWarnings/qualityStatus`，并支持一阶段颈部饰品检测。
+- 普通图与高清图分离：preview 使用更低分辨率 JPEG 压缩，hd 保留完整输出像素。
 
 ## 目录结构
 
