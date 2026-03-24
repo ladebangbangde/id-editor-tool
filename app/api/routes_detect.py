@@ -21,7 +21,7 @@ async def detect(
     else:
         _, image = processor.read_image_path(imagePath or '')
     data = processor.detect(image)
-    if data.resultLevel == 'FAILED':
+    if data.resultLevel == 'FAIL':
         primary_reason = data.reasons[0] if data.reasons else None
         return ApiResponse(
             success=False,

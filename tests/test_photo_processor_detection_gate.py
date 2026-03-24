@@ -91,6 +91,6 @@ def test_generate_blocks_failed_source_image_before_pipeline(processor: PhotoPro
             save_output=False,
         )
 
-    assert exc_info.value.details['resultLevel'] == 'FAILED'
+    assert exc_info.value.details['resultLevel'] == 'FAIL'
     assert exc_info.value.details['reasons'][0]['code'] == 'EYE_OCCLUDED'
     assert exc_info.value.details['suggestions'] == ['请露出完整双眼与面部']

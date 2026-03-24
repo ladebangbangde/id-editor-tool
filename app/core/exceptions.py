@@ -39,8 +39,8 @@ class ImageTooSmallError(AppError):
 
 
 class InvalidArgumentError(AppError):
-    def __init__(self, message: str = 'Invalid request argument'):
-        super().__init__('INVALID_ARGUMENT', message, 400)
+    def __init__(self, message: str = 'Invalid request argument', details: Any = None):
+        super().__init__('INVALID_ARGUMENT', message, 400, details)
 
 
 class ProcessFailedError(AppError):

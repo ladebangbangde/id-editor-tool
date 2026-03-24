@@ -8,6 +8,7 @@ from app.api.routes_generate import router as generate_router
 from app.api.routes_formal_wear import router as formal_wear_router
 from app.api.routes_health import router as health_router
 from app.api.routes_layout import router as layout_router
+from app.api.routes_photo import router as photo_router
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logger import get_logger, setup_logging
@@ -28,6 +29,7 @@ app.include_router(detect_router)
 app.include_router(generate_router)
 app.include_router(formal_wear_router)
 app.include_router(layout_router)
+app.include_router(photo_router)
 app.include_router(formal_wear_router)
 app.mount(
     settings.normalized_static_mount_path,
