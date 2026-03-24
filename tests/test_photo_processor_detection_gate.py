@@ -2,11 +2,13 @@ from PIL import Image
 import pytest
 
 from app.core.exceptions import EyeOccludedError
-from app.services.face_detection import DetectionIssue, FaceDetectionResult, FAILED, WARNING
+from app.services.face_detection import DetectionIssue, DetectionReason, FaceDetectionResult, FAILED, WARNING
 from app.services.photo_processor import PhotoProcessor
 
 
 def build_result(*, status: str, can_generate: bool, recommended: bool, reasons=None, reason_codes=None, warnings=None, warning_codes=None):
+    reason_texts = reasons or []
+    codes = reason_codes or []
     return FaceDetectionResult(
         width=800,
         height=1000,
@@ -16,14 +18,17 @@ def build_result(*, status: str, can_generate: bool, recommended: bool, reasons=
         can_generate=can_generate,
         status=status,
         result_level=status,
-        reasons=reasons or [],
-        suggestions=['请露出完整双眼与面部'] if reason_codes else [],
-        reason_codes=reason_codes or [],
+        reasons=[
+            DetectionReason(code=code, title=message, detail=message)
+            for code, message in zip(codes, reason_texts)
+        ],
+        suggestions=['请露出完整双眼与面部'] if codes else [],
+        reason_codes=codes,
         warnings=warnings or [],
         warning_codes=warning_codes or [],
         issues=[
             DetectionIssue(code=code, message=message, severity=FAILED)
-            for code, message in zip(reason_codes or [], reasons or [])
+            for code, message in zip(codes, reason_texts)
         ]
         + [
             DetectionIssue(code=code, message=message, severity=WARNING)
@@ -87,5 +92,5 @@ def test_generate_blocks_failed_source_image_before_pipeline(processor: PhotoPro
         )
 
     assert exc_info.value.details['resultLevel'] == 'FAILED'
-    assert exc_info.value.details['reasons'] == ['双眼或单眼被遮挡']
+    assert exc_info.value.details['reasons'][0]['code'] == 'EYE_OCCLUDED'
     assert exc_info.value.details['suggestions'] == ['请露出完整双眼与面部']

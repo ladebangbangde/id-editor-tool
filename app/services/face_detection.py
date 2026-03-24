@@ -22,6 +22,13 @@ class DetectionIssue:
 
 
 @dataclass
+class DetectionReason:
+    code: str
+    title: str
+    detail: str
+
+
+@dataclass
 class FaceDetectionResult:
     width: int
     height: int
@@ -31,7 +38,7 @@ class FaceDetectionResult:
     can_generate: bool
     status: str
     result_level: str
-    reasons: list[str]
+    reasons: list[DetectionReason]
     suggestions: list[str]
     reason_codes: list[str]
     warnings: list[str]
@@ -52,20 +59,38 @@ class FaceDetectionService:
     FAILED_REASON_LABELS = {
         'NO_FACE_DETECTED': '未检测到可用正脸',
         'MULTIPLE_FACES_DETECTED': '画面中存在多张人脸',
+        'HEAD_ACCESSORY': '检测到头部装饰物',
+        'HAND_OCCLUSION': '手部遮挡面部区域',
         'FACE_OCCLUDED': '面部关键区域被遮挡',
         'EYE_OCCLUDED': '单眼或双眼被遮挡',
         'INVALID_POSE': '非标准正脸姿态',
         'LANDMARK_UNSTABLE': '关键点检测不稳定',
         'BAD_COMPOSITION': '构图不适合证件照裁切',
+        'BAD_LIGHTING': '光线不均匀或存在彩色环境光',
+    }
+    FAILED_REASON_DETAILS = {
+        'NO_FACE_DETECTED': '未检测到可用于证件照的单人正脸，系统无法执行稳定裁切',
+        'MULTIPLE_FACES_DETECTED': '画面中存在多张人脸，不符合单人证件照输入要求',
+        'HEAD_ACCESSORY': '头部存在明显装饰物（如兔耳、夸张发饰等），不符合标准证件照要求',
+        'HAND_OCCLUSION': '手部进入脸部附近区域，影响面部识别与裁切稳定性',
+        'FACE_OCCLUDED': '鼻子、嘴巴、下巴或面部轮廓存在遮挡，无法安全生成证件照',
+        'EYE_OCCLUDED': '单眼或双眼存在遮挡，关键点定位与人像合规性不足',
+        'INVALID_POSE': '人脸存在明显侧脸、低头、仰头或偏头，不符合正脸姿态要求',
+        'LANDMARK_UNSTABLE': '关键点数量不足或稳定性偏低，后续裁切风险较高',
+        'BAD_COMPOSITION': '人脸占比、位置或头顶/下巴留白不合适，容易导致半脸或截断',
+        'BAD_LIGHTING': '面部亮度不均、阴影明显或有彩色环境光干扰，影响识别质量',
     }
     SUGGESTIONS_BY_CODE = {
         'NO_FACE_DETECTED': ['请正对镜头拍摄', '请让人脸位于画面中央并保留完整头部'],
         'MULTIPLE_FACES_DETECTED': ['请仅保留一位拍摄对象', '请让人脸位于画面中央并保留完整头部'],
+        'HEAD_ACCESSORY': ['请摘下头饰后重新拍摄', '请使用无遮挡、正面、自然表情的照片'],
+        'HAND_OCCLUSION': ['请避免手部遮挡脸部', '请保持双手离开面部附近区域'],
         'FACE_OCCLUDED': ['请露出完整双眼与面部', '请避免手、头发遮挡五官'],
         'EYE_OCCLUDED': ['请露出完整双眼与面部', '请避免手、头发遮挡五官'],
         'INVALID_POSE': ['请正对镜头拍摄'],
         'LANDMARK_UNSTABLE': ['请正对镜头拍摄', '请让人脸位于画面中央并保留完整头部'],
         'BAD_COMPOSITION': ['请让人脸位于画面中央并保留完整头部'],
+        'BAD_LIGHTING': ['请在均匀白光下拍摄，避免侧光与强阴影', '请避免彩色灯光或强烈环境色反射'],
     }
 
     def __init__(self) -> None:
@@ -114,17 +139,25 @@ class FaceDetectionService:
     def _laplacian_variance(gray: np.ndarray) -> float:
         return float(np.var(filters.laplace(gray)))
 
-    def _build_failed_reasons_and_suggestions(self, failed_issues: list[DetectionIssue]) -> tuple[list[str], list[str]]:
-        reasons: list[str] = []
+    def _build_failed_reasons_and_suggestions(
+        self,
+        failed_issues: list[DetectionIssue],
+    ) -> tuple[list[DetectionReason], list[str]]:
+        reasons: list[DetectionReason] = []
         suggestions: list[str] = []
-        seen_reasons: set[str] = set()
+        seen_reason_codes: set[str] = set()
         seen_suggestions: set[str] = set()
 
         for issue in failed_issues:
-            reason = self.FAILED_REASON_LABELS.get(issue.code, issue.message)
-            if reason not in seen_reasons:
-                reasons.append(reason)
-                seen_reasons.add(reason)
+            if issue.code not in seen_reason_codes:
+                reasons.append(
+                    DetectionReason(
+                        code=issue.code,
+                        title=self.FAILED_REASON_LABELS.get(issue.code, issue.code),
+                        detail=self.FAILED_REASON_DETAILS.get(issue.code, issue.message),
+                    )
+                )
+                seen_reason_codes.add(issue.code)
             for suggestion in self.SUGGESTIONS_BY_CODE.get(issue.code, []):
                 if suggestion not in seen_suggestions:
                     suggestions.append(suggestion)
@@ -146,6 +179,7 @@ class FaceDetectionService:
     def _analyze_single_face(
         self,
         gray: np.ndarray,
+        rgb: np.ndarray,
         width: int,
         height: int,
         face_box: dict[str, int],
@@ -198,10 +232,18 @@ class FaceDetectionService:
         if forehead['edge'] > face_edge * 1.45 and min(left_score, right_score) < face_score_floor * 1.15:
             occlusion_areas.append('forehead')
             self._append_issue(issues, 'FACE_OCCLUDED', '头发或其他遮挡覆盖眉眼区域，不适合证件照生成', FAILED)
+            self._append_issue(issues, 'HEAD_ACCESSORY', '头顶区域检测到疑似头饰或夸张装饰，不符合证件照规范', FAILED)
 
         if central_score < central_floor or mouth['dark_ratio'] > 0.7 or chin['dark_ratio'] > 0.78:
             occlusion_areas.append('nose_mouth_chin')
             self._append_issue(issues, 'FACE_OCCLUDED', '鼻子、嘴巴或下巴区域存在明显遮挡，无法安全生成证件照', FAILED)
+
+        left_cheek = self._region_metrics(self._region_from_ratio(face_resized, 0.03, 0.42, 0.26, 0.78), face_mean)
+        right_cheek = self._region_metrics(self._region_from_ratio(face_resized, 0.74, 0.42, 0.97, 0.78), face_mean)
+        cheek_intrusion = max(left_cheek['edge'], right_cheek['edge']) > face_edge * 1.55 and central_score < central_floor * 1.25
+        if cheek_intrusion:
+            occlusion_areas.append('face_side')
+            self._append_issue(issues, 'HAND_OCCLUSION', '手部进入脸部附近区域，影响识别与裁切稳定性', FAILED)
 
         if face_edge < 0.0012 or face_std < 0.035:
             self._append_issue(issues, 'LANDMARK_UNSTABLE', '人脸细节不足或过于模糊，关键点检测不稳定', FAILED)
@@ -212,6 +254,16 @@ class FaceDetectionService:
             self._append_issue(issues, 'INVALID_POSE', '人脸左右差异过大，疑似明显侧脸或偏转过大', FAILED)
         elif symmetry_ratio > 1.45:
             self._append_issue(issues, 'INVALID_POSE', '人脸姿态存在偏转，建议使用更正的正脸照片', WARNING)
+
+        face_rgb = rgb[y : y + h, x : x + w]
+        if face_rgb.size > 0:
+            mean_channels = np.mean(face_rgb.reshape(-1, 3), axis=0)
+            channel_delta = float(np.max(mean_channels) - np.min(mean_channels))
+            light_row_std = float(np.std(np.mean(face_resized, axis=1)))
+            if channel_delta > 0.12 or light_row_std > 0.14:
+                self._append_issue(issues, 'BAD_LIGHTING', '面部光线不均匀或存在明显彩色环境光干扰', FAILED)
+            elif channel_delta > 0.08 or light_row_std > 0.10:
+                self._append_issue(issues, 'BAD_LIGHTING', '光线条件一般，建议使用更均匀白光拍摄', WARNING)
 
         metrics = {
             'faceHeightRatio': h / max(height, 1),
@@ -266,6 +318,7 @@ class FaceDetectionService:
             primary_face = max(face_boxes, key=lambda box: box['width'] * box['height'])
             single_face_issues, metrics, occlusion_areas = self._analyze_single_face(
                 np.asarray(image.convert('L'), dtype=np.float32) / 255.0,
+                np.asarray(image.convert('RGB'), dtype=np.float32) / 255.0,
                 width,
                 height,
                 primary_face,
@@ -339,7 +392,7 @@ class FaceDetectionService:
             face_boxes=face_boxes,
             primary_face=primary_face,
             blur_score=blur_score,
-            occlusion_detected=bool({'FACE_OCCLUDED', 'EYE_OCCLUDED'} & issue_codes),
+            occlusion_detected=bool({'FACE_OCCLUDED', 'EYE_OCCLUDED', 'HAND_OCCLUSION'} & issue_codes),
             occlusion_areas=occlusion_areas,
             pose_accepted='INVALID_POSE' not in issue_codes,
             landmark_stable='LANDMARK_UNSTABLE' not in issue_codes,

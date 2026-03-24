@@ -11,6 +11,12 @@ class DetectIssue(BaseModel):
     severity: Literal['WARNING', 'FAILED']
 
 
+class DetectReason(BaseModel):
+    code: str
+    title: str
+    detail: str
+
+
 class DetectData(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -23,7 +29,7 @@ class DetectData(BaseModel):
     status: Literal['PASSED', 'WARNING', 'FAILED']
     resultLevel: Literal['PASSED', 'WARNING', 'FAILED']
     canGenerate: bool
-    reasons: List[str]
+    reasons: List[DetectReason]
     suggestions: List[str] = Field(default_factory=list)
     reasonCodes: List[str]
     warnings: List[str]

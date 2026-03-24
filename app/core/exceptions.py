@@ -19,8 +19,8 @@ class AppError(Exception):
 
 
 class InvalidImageError(AppError):
-    def __init__(self, message: str = 'Invalid image uploaded'):
-        super().__init__('INVALID_IMAGE', message, 400)
+    def __init__(self, message: str = 'Invalid image uploaded', details: Any = None):
+        super().__init__('INVALID_IMAGE', message, 400, details)
 
 
 class NoFaceDetectedError(AppError):
@@ -73,6 +73,21 @@ class BadCompositionError(AppError):
         super().__init__('BAD_COMPOSITION', message, 422, details)
 
 
+class HeadAccessoryError(AppError):
+    def __init__(self, message: str = 'Head accessory detected and unsuitable for ID photo generation', details: Any = None):
+        super().__init__('HEAD_ACCESSORY', message, 422, details)
+
+
+class HandOcclusionError(AppError):
+    def __init__(self, message: str = 'Hand occludes face and unsuitable for ID photo generation', details: Any = None):
+        super().__init__('HAND_OCCLUSION', message, 422, details)
+
+
+class BadLightingError(AppError):
+    def __init__(self, message: str = 'Lighting is unsuitable for ID photo generation', details: Any = None):
+        super().__init__('BAD_LIGHTING', message, 422, details)
+
+
 
 class ImageTooBlurryError(AppError):
     def __init__(self, message: str = 'Image is too blurry for formal wear generation', details: Any = None):
@@ -82,4 +97,3 @@ class ImageTooBlurryError(AppError):
 class ShoulderNeckIncompleteError(AppError):
     def __init__(self, message: str = 'Shoulder and neck area is incomplete for formal wear generation', details: Any = None):
         super().__init__('SHOULDER_NECK_INCOMPLETE', message, 422, details)
-
