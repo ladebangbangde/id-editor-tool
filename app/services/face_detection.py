@@ -47,6 +47,11 @@ class FaceDetectionResult:
     landmark_stable: bool = True
     composition_accepted: bool = True
     metrics: dict[str, float] = field(default_factory=dict)
+    primary_issue: str | None = None
+    primary_message: str | None = None
+    secondary_warnings: list[str] = field(default_factory=list)
+    quality_status: str = PASS
+    quality_message: str = '照片质量良好，可直接处理'
 
 
 class FaceDetectionService:
@@ -57,6 +62,8 @@ class FaceDetectionService:
         'IMAGE_TOO_BLURRY': ['请重新拍摄并保持稳定对焦'],
         'SEVERE_POSE': ['请尽量正对镜头，减少侧脸角度'],
         'FACE_RATIO_INVALID': ['请调整拍摄距离，让头肩比例更合适'],
+        'JEWELRY_DETECTED': ['建议去除项链或明显颈部饰品后重拍'],
+        'NECK_ACCESSORY': ['证件照通常要求颈部无遮挡，请避免饰品遮挡'],
         'HEAD_SHOULDER_INCOMPLETE': ['请保证头顶、下巴和肩颈完整入镜'],
         'NOT_SUITABLE_PORTRAIT': ['请使用单人半身或头像照片'],
         'EXTREME_LIGHTING': ['请在光线更均匀的环境中拍摄'],
@@ -106,4 +113,9 @@ class FaceDetectionService:
             landmark_stable='IMAGE_TOO_BLURRY' not in issue_codes,
             composition_accepted='NOT_SUITABLE_PORTRAIT' not in issue_codes and 'FACE_RATIO_INVALID' not in issue_codes,
             metrics=result.metrics,
+            primary_issue=result.primary_issue,
+            primary_message=result.primary_message,
+            secondary_warnings=result.secondary_warnings,
+            quality_status=result.quality_status,
+            quality_message=result.quality_message,
         )

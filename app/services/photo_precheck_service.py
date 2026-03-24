@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from PIL import Image
@@ -44,6 +44,11 @@ class PhotoPrecheckResult:
     face_boxes: list[dict[str, int]]
     primary_face: dict[str, int] | None
     issues: list[PrecheckIssue]
+    primary_issue: str | None = None
+    primary_message: str | None = None
+    secondary_warnings: list[str] = field(default_factory=list)
+    quality_status: str = PASS
+    quality_message: str = '照片质量良好，可直接处理'
 
 
 class PhotoPrecheckService:
@@ -59,6 +64,25 @@ class PhotoPrecheckService:
         'EXTREME_LIGHTING': '光照异常严重',
     }
 
+    ISSUE_PRIORITY = {
+        'RESOLUTION_TOO_LOW': 100,
+        'NO_FACE_DETECTED': 95,
+        'MULTIPLE_FACES_DETECTED': 94,
+        'IMAGE_TOO_BLURRY': 90,
+        'SEVERE_POSE': 80,
+        'HEAD_SHOULDER_INCOMPLETE': 78,
+        'FACE_RATIO_INVALID': 76,
+        'JEWELRY_DETECTED': 74,
+        'EXTREME_LIGHTING': 70,
+        'NOT_SUITABLE_PORTRAIT': 60,
+    }
+
+    QUALITY_MESSAGES = {
+        PASS: '照片质量良好，可直接进入处理流程',
+        WARNING: '照片可处理，但存在风险项，建议按提示优化后重拍',
+        FAIL: '照片暂不适合处理，请根据主问题调整后重试',
+    }
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self.metrics_service = PhotoMetricsService()
@@ -68,7 +92,6 @@ class PhotoPrecheckService:
         if self._detector is not None:
             return self._detector
 
-        # Lazy import to keep startup light and avoid import-time failures.
         import mediapipe as mp
 
         self._detector = mp.solutions.face_detection.FaceDetection(
@@ -79,7 +102,7 @@ class PhotoPrecheckService:
 
     @staticmethod
     def _append_issue(issues: list[PrecheckIssue], code: str, message: str, severity: str) -> None:
-        if any(item.code == code for item in issues):
+        if any(item.code == code and item.severity == severity for item in issues):
             return
         issues.append(PrecheckIssue(code=code, message=message, severity=severity))
 
@@ -125,12 +148,63 @@ class PhotoPrecheckService:
             )
         return boxes
 
+    def _detect_neck_accessory(self, image: Image.Image, face_box: FaceBox) -> tuple[float, dict[str, float]]:
+        cv2 = self.metrics_service._cv2()
+        rgb = np.asarray(image.convert('RGB'))
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        height, width = gray.shape[:2]
+
+        neck_left = max(0, int(face_box.x - face_box.width * 0.10))
+        neck_right = min(width, int(face_box.x + face_box.width * 1.10))
+        neck_top = min(height - 1, int(face_box.y + face_box.height * 0.78))
+        neck_bottom = min(height, int(face_box.y + face_box.height * 1.85))
+
+        if neck_right - neck_left < 24 or neck_bottom - neck_top < 24:
+            return 0.0, {'neck_edge_density': 0.0, 'neck_bright_ratio': 0.0, 'neck_line_score': 0.0}
+
+        roi = gray[neck_top:neck_bottom, neck_left:neck_right]
+        roi_blur = cv2.GaussianBlur(roi, (3, 3), 0)
+        edges = cv2.Canny(roi_blur, 75, 170)
+        edge_density = float(np.count_nonzero(edges) / max(edges.size, 1))
+
+        mean_val = float(np.mean(roi_blur))
+        std_val = float(np.std(roi_blur))
+        bright_mask = roi_blur > (mean_val + std_val * 1.25)
+        bright_ratio = float(np.count_nonzero(bright_mask) / max(bright_mask.size, 1))
+
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        thin_line_count = 0
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            area = cv2.contourArea(contour)
+            if area < 12 or area > roi.shape[0] * roi.shape[1] * 0.20:
+                continue
+            long_side = max(w, h)
+            short_side = max(min(w, h), 1)
+            elongation = long_side / short_side
+            if elongation > 2.8 and short_side <= 18:
+                thin_line_count += 1
+
+        line_score = min(thin_line_count / 18.0, 1.0)
+        confidence = min(edge_density * 2.8 + bright_ratio * 4.2 + line_score * 0.55, 1.0)
+
+        return confidence, {
+            'neck_edge_density': edge_density,
+            'neck_bright_ratio': bright_ratio,
+            'neck_line_score': line_score,
+        }
+
     def _build_reason(self, code: str, fallback: str) -> PrecheckReason:
         return PrecheckReason(
             code=code,
             title=self.FAILED_REASON_LABELS.get(code, code),
             detail=fallback,
         )
+
+    def _select_primary_issue(self, issues: list[PrecheckIssue]) -> PrecheckIssue | None:
+        if not issues:
+            return None
+        return max(issues, key=lambda issue: self.ISSUE_PRIORITY.get(issue.code, 0))
 
     def precheck(self, image: Image.Image) -> PhotoPrecheckResult:
         width, height = image.size
@@ -166,17 +240,17 @@ class PhotoPrecheckService:
 
             if face_width_ratio < 0.10 or face_height_ratio < 0.14:
                 self._append_issue(issues, 'FACE_RATIO_INVALID', '人脸过小，后续处理无法保证质量', FAIL)
-            elif face_width_ratio < 0.16 or face_height_ratio < 0.22:
+            elif face_width_ratio < 0.155 or face_height_ratio < 0.21:
                 self._append_issue(issues, 'FACE_RATIO_INVALID', '人脸偏小，放大后可能损失细节', WARNING)
 
             if face_width_ratio > 0.72 or face_height_ratio > 0.82:
                 self._append_issue(issues, 'FACE_RATIO_INVALID', '人脸过近，构图异常', FAIL)
-            elif face_width_ratio > 0.62 or face_height_ratio > 0.72:
+            elif face_width_ratio > 0.64 or face_height_ratio > 0.74:
                 self._append_issue(issues, 'FACE_RATIO_INVALID', '人脸偏近，建议稍远一点拍摄', WARNING)
 
             if abs(center_x - 0.5) > 0.30 or abs(center_y - 0.5) > 0.34:
                 self._append_issue(issues, 'NOT_SUITABLE_PORTRAIT', '人脸偏移过大，难以稳定裁切', FAIL)
-            elif abs(center_x - 0.5) > 0.20 or abs(center_y - 0.5) > 0.24:
+            elif abs(center_x - 0.5) > 0.22 or abs(center_y - 0.5) > 0.26:
                 self._append_issue(issues, 'NOT_SUITABLE_PORTRAIT', '构图不够标准，建议把人脸放到中间', WARNING)
 
             if top_margin < 0.008 or bottom_margin < 0.01:
@@ -187,10 +261,18 @@ class PhotoPrecheckService:
             keypoints = primary_face_box.get('keypoints', []) if primary_face_box else []
             if len(keypoints) >= 2:
                 eye_distance = abs(keypoints[1]['x'] - keypoints[0]['x'])
-                if eye_distance < 0.12:
+                metrics['eye_distance_ratio'] = eye_distance
+                if eye_distance < 0.095:
                     self._append_issue(issues, 'SEVERE_POSE', '明显侧脸或偏转角度过大', FAIL)
-                elif eye_distance < 0.18:
-                    self._append_issue(issues, 'SEVERE_POSE', '存在侧脸倾向，建议更正面', WARNING)
+                elif eye_distance < 0.14:
+                    self._append_issue(issues, 'SEVERE_POSE', '存在轻微姿态偏差，建议更正面', WARNING)
+
+            jewelry_conf, jewelry_metrics = self._detect_neck_accessory(image, face_box)
+            metrics.update(jewelry_metrics)
+            metrics['jewelry_confidence'] = jewelry_conf
+            if jewelry_conf >= 0.66:
+                self._append_issue(issues, 'JEWELRY_DETECTED', '佩戴项链首饰，建议去除后重拍', WARNING)
+                self._append_issue(issues, 'NECK_ACCESSORY', '证件照通常要求颈部无遮挡，避免审核失败', WARNING)
 
         blur_score = metrics['blur_score']
         brightness = metrics['brightness']
@@ -212,14 +294,28 @@ class PhotoPrecheckService:
         failed_issues = [issue for issue in issues if issue.severity == FAIL]
         warning_issues = [issue for issue in issues if issue.severity == WARNING]
         status = FAIL if failed_issues else WARNING if warning_issues else PASS
+        quality_status = status
 
         reasons = [self._build_reason(issue.code, issue.message) for issue in failed_issues]
         warnings = [issue.message for issue in warning_issues]
 
+        primary_candidates = failed_issues if failed_issues else warning_issues
+        primary_issue_obj = self._select_primary_issue(primary_candidates)
+        primary_issue = primary_issue_obj.code if primary_issue_obj else None
+        primary_message = primary_issue_obj.message if primary_issue_obj else self.QUALITY_MESSAGES[status]
+
+        secondary_warnings = [
+            issue.message
+            for issue in warning_issues
+            if not primary_issue_obj or issue.code != primary_issue_obj.code or issue.message != primary_issue_obj.message
+        ]
+
         logger.info(
-            'photo precheck status=%s face_count=%s metrics=%s reason_codes=%s warning_codes=%s',
+            'photo precheck status=%s quality_status=%s face_count=%s primary_issue=%s metrics=%s reason_codes=%s warning_codes=%s',
             status,
+            quality_status,
             face_count,
+            primary_issue,
             {
                 'blur_score': round(blur_score, 2),
                 'brightness': round(brightness, 2),
@@ -228,6 +324,7 @@ class PhotoPrecheckService:
                 'face_center_x': round(metrics['face_center_x'], 4),
                 'face_center_y': round(metrics['face_center_y'], 4),
                 'edge_density': round(edge_density, 4),
+                'jewelry_confidence': round(metrics.get('jewelry_confidence', 0.0), 4),
             },
             [item.code for item in failed_issues],
             [item.code for item in warning_issues],
@@ -246,4 +343,9 @@ class PhotoPrecheckService:
             face_boxes=[{k: int(v) for k, v in box.items() if k in {'x', 'y', 'width', 'height'}} for box in face_boxes],
             primary_face={k: int(v) for k, v in primary_face_box.items() if k in {'x', 'y', 'width', 'height'}} if primary_face_box else None,
             issues=issues,
+            primary_issue=primary_issue,
+            primary_message=primary_message,
+            secondary_warnings=secondary_warnings,
+            quality_status=quality_status,
+            quality_message=self.QUALITY_MESSAGES[status],
         )

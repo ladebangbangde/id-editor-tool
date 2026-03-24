@@ -44,3 +44,8 @@ class DetectData(BaseModel):
     landmarkStable: bool = True
     compositionAccepted: bool = True
     metrics: Dict[str, float] = Field(default_factory=dict)
+    primaryIssue: Optional[str] = None
+    primaryMessage: Optional[str] = None
+    secondaryWarnings: List[str] = Field(default_factory=list)
+    qualityStatus: Literal['PASS', 'WARNING', 'FAIL'] = 'PASS'
+    qualityMessage: str = '照片质量良好，可直接处理'

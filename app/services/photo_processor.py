@@ -105,6 +105,11 @@ class PhotoProcessor:
             landmarkStable=result.landmark_stable,
             compositionAccepted=result.composition_accepted,
             metrics=result.metrics,
+            primaryIssue=result.primary_issue,
+            primaryMessage=result.primary_message,
+            secondaryWarnings=result.secondary_warnings,
+            qualityStatus=result.quality_status,
+            qualityMessage=result.quality_message,
         )
 
     def detect(self, image: Image.Image) -> DetectData:
@@ -154,6 +159,18 @@ class PhotoProcessor:
         stored = self.storage.stored_file(path)
         return FileInfo(path=str(stored.path.resolve()), url=stored.url)
 
+    def _build_preview_image(self, hd_image: Image.Image, max_long_side: int = 480, scale_cap: float = 0.72) -> tuple[Image.Image, int]:
+        preview_image = hd_image.copy()
+        width, height = preview_image.size
+        long_side = max(width, height)
+        scale = min(max_long_side / max(long_side, 1), scale_cap, 1.0)
+        target_width = max(160, int(round(width * scale)))
+        target_height = max(160, int(round(height * scale)))
+        if target_width != width or target_height != height:
+            preview_image = preview_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        preview_quality = min(self.settings.preview_quality, 75)
+        return preview_image, preview_quality
+
     def generate(
         self,
         image: Image.Image,
@@ -189,14 +206,13 @@ class PhotoProcessor:
             hd_image = self.enhancer.enhance(hd_image)
             logger.info('Enhancement applied')
 
-        preview_image = hd_image.copy()
-        preview_image.thumbnail((max(256, spec.width_px), max(256, spec.height_px)), Image.Resampling.LANCZOS)
+        preview_image, preview_quality = self._build_preview_image(hd_image)
 
         hd_path = self.storage.hd_path(task_id, 'id_photo_hd.png')
         preview_path = self.storage.preview_path(task_id, 'id_photo_preview.jpg')
         if save_output:
             save_image(hd_image, hd_path)
-            save_image(preview_image, preview_path, quality=self.settings.preview_quality)
+            save_image(preview_image, preview_path, quality=preview_quality)
             logger.info('Output files saved hd=%s preview=%s', hd_path, preview_path)
 
         intermediate_files = None
@@ -208,6 +224,7 @@ class PhotoProcessor:
                     intermediate_files[name] = self._file_info(path)
 
         warnings = detect_result.warnings.copy()
+        detect_summary = self._build_detect_data(detect_result)
         preview_info = self._file_info(preview_path) if save_output else FileInfo(path='', url='')
         hd_info = self._file_info(hd_path) if save_output else FileInfo(path='', url='')
         return GenerateData(
@@ -221,7 +238,21 @@ class PhotoProcessor:
             width=spec.width_px,
             height=spec.height_px,
             warnings=warnings,
-            detect=self._build_detect_data(detect_result),
+            detect=detect_summary,
+            detectSummary=detect_summary,
+            primaryIssue=detect_result.primary_issue,
+            primaryMessage=detect_result.primary_message,
+            secondaryWarnings=detect_result.secondary_warnings,
+            qualityStatus=detect_result.quality_status,
+            qualityMessage=detect_result.quality_message,
+            previewWidth=preview_image.width,
+            previewHeight=preview_image.height,
+            previewFormat='JPEG',
+            previewQuality=preview_quality,
+            hdWidth=hd_image.width,
+            hdHeight=hd_image.height,
+            hdFormat='PNG',
+            hdQuality=100,
             intermediateFiles=intermediate_files,
         )
 

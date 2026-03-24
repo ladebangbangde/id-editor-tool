@@ -27,6 +27,8 @@
 - 增强：轻量亮度/对比度/锐化处理。
 - 排版：6 寸纸张打印参考图。
 - 预检指标：`OpenCV` 计算清晰度、亮度、边缘密度等可解释指标。
+- 质量提示：提供 `primaryIssue/primaryMessage/secondaryWarnings/qualityStatus`，并支持一阶段颈部饰品检测。
+- 普通图与高清图分离：preview 使用更低分辨率 JPEG 压缩，hd 保留完整输出像素。
 
 ## 目录结构
 
