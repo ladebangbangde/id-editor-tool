@@ -4,9 +4,22 @@ from app.core.exceptions import InvalidArgumentError
 from app.schemas.common import ApiResponse, ErrorBody
 from app.schemas.detect import DetectData
 from app.schemas.generate import GenerateData
+from app.schemas.specs import PhotoSpecsData
 from app.services.photo_processor import get_photo_processor
+from app.services.specs import list_photo_specs, supported_size_keys
 
 router = APIRouter(prefix='/photo', tags=['photo'])
+
+
+@router.get('/specs', response_model=ApiResponse[PhotoSpecsData])
+async def photo_specs() -> ApiResponse[PhotoSpecsData]:
+    data = PhotoSpecsData(
+        supportedSizeKeys=supported_size_keys(),
+        specs=list_photo_specs(),
+        customSizeSupported=False,
+        customSizeHint='当前不支持 widthMm/heightMm/pixelWidth/pixelHeight 自定义尺寸输入。',
+    )
+    return ApiResponse(success=True, message='ok', data=data)
 
 
 @router.post('/precheck', response_model=ApiResponse[DetectData])

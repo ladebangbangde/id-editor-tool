@@ -9,6 +9,7 @@
 - `POST /generate`：支持上传原图或传入共享路径生成证件照预览图与高清图。
 - `POST /photo/precheck`：独立的照片预检接口，返回结构化指标与风险提示。
 - `POST /photo/process`：`/generate` 的兼容别名，处理前自动执行预检。
+- `GET /photo/specs`：返回 tool 当前支持的 canonical `sizeKey`、像素/毫米尺寸、aliases 与是否支持自定义尺寸。
 - `POST /layout`：基于原图/共享路径/已生成证件照生成 6 寸排版图。
 - `POST /formal-wear`：兼容 server 当前一键换装联调入口，使用纯代码绘制的轻量正装图层生成预览图与高清图。
 - `/uploads/...`：直接访问共享上传目录中的静态结果。
@@ -198,6 +199,12 @@ HD_QUALITY=95
 - `one_inch`：一寸，`295x413`
 - `small_one_inch`：小一寸，`260x378`
 - `two_inch`：二寸，`413x579`
+- `passport_photo`：护照，`390x567`
+
+常见别名（自动映射）：
+
+- `passport` → `passport_photo`
+- `visa` → `passport_photo`
 
 当前支持底色：
 
