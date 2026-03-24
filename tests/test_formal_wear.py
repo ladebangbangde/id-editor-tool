@@ -30,10 +30,10 @@ def test_formal_wear_renderer_makes_visible_changes_for_gender_style_and_color()
     face_box = {'x': 96, 'y': 28, 'width': 104, 'height': 134}
 
     male_business_black, _ = renderer.render(foreground, face_box=face_box, gender='male', style='business', color='black')
-    female_simple_gray, _ = renderer.render(foreground, face_box=face_box, gender='female', style='simple', color='gray')
+    female_standard_black, _ = renderer.render(foreground, face_box=face_box, gender='female', style='standard', color='black')
 
     assert _image_difference_bbox(foreground, male_business_black) is not None
-    assert _image_difference_bbox(male_business_black, female_simple_gray) is not None
+    assert _image_difference_bbox(male_business_black, female_standard_black) is not None
 
 
 def test_formal_wear_service_generates_real_overlay_outputs(tmp_path: Path) -> None:
@@ -89,20 +89,20 @@ def test_formal_wear_service_generates_real_overlay_outputs(tmp_path: Path) -> N
     result = service.create_from_path(
         image_path=str(tmp_path / 'source.jpg'),
         gender='female',
-        style='business',
-        color='navy',
+        style='standard',
+        color='black',
         enhance=False,
         save_output=True,
     )
 
     assert result.gender == 'female'
-    assert result.style == 'business'
-    assert result.color == 'navy'
+    assert result.style == 'standard'
+    assert result.color == 'black'
     assert result.previewPath.endswith('formal_wear_preview.jpg')
     assert result.hdPath.endswith('formal_wear_hd.png')
     assert Path(result.previewPath).exists()
     assert Path(result.hdPath).exists()
-    assert any('refined formal-wear overlay gender=female style=business color=navy' in warning for warning in result.warnings)
+    assert any('refined formal-wear overlay gender=female style=standard color=black' in warning for warning in result.warnings)
 
 
 def test_formal_wear_route_supports_image_path(monkeypatch) -> None:
