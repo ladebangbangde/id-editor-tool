@@ -84,6 +84,8 @@ class DetectResultModel(BaseModel):
     reasons: list[str]
     qualityStatus: str | None = None
     qualityMessage: str | None = None
+    auditResult: dict[str, Any] | None = None
+    keypointConfidences: dict[str, float] | None = None
     suggestion: str
     message: str
 

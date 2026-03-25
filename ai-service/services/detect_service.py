@@ -29,6 +29,8 @@ class DetectOutcome:
     reasons: list[str]
     suggestion: str
     message: str
+    auditResult: dict
+    keypointConfidences: dict[str, float]
     primaryFaceBox: dict | None = None
 
     @property
@@ -94,6 +96,8 @@ class DetectService:
             image_shape=image_bgr.shape,
             faces=normalized_faces,
             blur_score=blur_score,
+            image_bgr=image_bgr,
+            gray_image=gray,
         )
         quality_details = self.quality_service.evaluate_details(loaded_image.image)
 
@@ -103,6 +107,25 @@ class DetectService:
             message = validation_result.message
         else:
             message = '未检测到稳定可处理人像，请上传单人正脸照片'
+        audit_result = {
+            'status': validation_result.auditStatus,
+            'code': validation_result.auditCode,
+            'message': validation_result.auditMessage,
+            'details': validation_result.auditDetails,
+        }
+        if validation_result.passed and quality_details['qualityStatus'] != 'passed':
+            audit_result = {
+                'status': 'warning',
+                'code': 'QUALITY_WARNING',
+                'message': quality_details['qualityMessage'],
+                'details': validation_result.auditDetails
+                + [
+                    {
+                        'code': 'QUALITY_WARNING',
+                        'message': quality_details['qualityMessage'],
+                    }
+                ],
+            }
 
         return DetectOutcome(
             imageId=image_id,
@@ -123,6 +146,8 @@ class DetectService:
             reasons=validation_result.reasons,
             suggestion=self._build_suggestion(validation_result, quality_details),
             message=message,
+            auditResult=audit_result,
+            keypointConfidences=validation_result.keypointConfidences,
             primaryFaceBox=validation_result.primaryFaceBox,
         )
 

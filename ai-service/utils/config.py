@@ -50,6 +50,20 @@ class Settings(BaseSettings):
     max_face_aspect_ratio: float = Field(default=1.35, validation_alias=AliasChoices('MAX_FACE_ASPECT_RATIO'))
     occluded_face_aspect_ratio: float = Field(default=0.55, validation_alias=AliasChoices('OCCLUDED_FACE_ASPECT_RATIO'))
     edge_touch_ratio: float = Field(default=0.03, validation_alias=AliasChoices('EDGE_TOUCH_RATIO'))
+    # 合规审核阈值：双眼/鼻尖/嘴部关键点检测置信度最低要求
+    landmark_confidence_threshold: float = Field(
+        default=0.42,
+        validation_alias=AliasChoices('LANDMARK_CONFIDENCE_THRESHOLD'),
+    )
+    # 合规审核阈值：侧脸计数超过该值认为不是标准正脸
+    max_profile_face_count: int = Field(default=0, validation_alias=AliasChoices('MAX_PROFILE_FACE_COUNT'))
+    # 合规审核阈值：头顶部区域占比，用于帽子/头部遮挡检测
+    head_top_region_ratio: float = Field(default=0.22, validation_alias=AliasChoices('HEAD_TOP_REGION_RATIO'))
+    # 合规审核阈值：头顶部边缘密度超过阈值时判定疑似帽子/头部遮挡
+    headwear_edge_ratio_threshold: float = Field(
+        default=0.2,
+        validation_alias=AliasChoices('HEADWEAR_EDGE_RATIO_THRESHOLD'),
+    )
 
     min_valid_face_width: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_WIDTH'))
     min_valid_face_height: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_HEIGHT'))
