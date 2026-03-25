@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 import cv2
 
 from core.exceptions import ERROR_FACE_OCCLUDED, ERROR_POSE_INVALID
+from constants.status import QUALITY_STATUS_FAILED, QUALITY_STATUS_WARNING
 from services.quality_service import QualityService
 from services.validation_service import LoadedImage, ValidationOutcome, ValidationService
 
@@ -27,6 +28,9 @@ class DetectOutcome:
     imageMode: str
     validationPassed: bool
     reasons: list[str]
+    status: str
+    code: str
+    details: list[dict]
     suggestion: str
     message: str
     auditResult: dict
@@ -127,6 +131,15 @@ class DetectService:
                 ],
             }
 
+        final_quality_status = quality_details['qualityStatus']
+        final_quality_message = quality_details['qualityMessage']
+        if audit_result['status'] == 'failed':
+            final_quality_status = QUALITY_STATUS_FAILED
+            final_quality_message = audit_result['message']
+        elif audit_result['status'] == 'warning' and final_quality_status == 'passed':
+            final_quality_status = QUALITY_STATUS_WARNING
+            final_quality_message = audit_result['message']
+
         return DetectOutcome(
             imageId=image_id,
             faceDetected=validation_result.hasFace,
@@ -136,14 +149,17 @@ class DetectService:
             poseValid=ERROR_POSE_INVALID not in validation_result.reasons,
             occlusionDetected=ERROR_FACE_OCCLUDED in validation_result.reasons,
             isProcessable=validation_result.passed,
-            qualityStatus=quality_details['qualityStatus'],
-            qualityMessage=quality_details['qualityMessage'],
+            qualityStatus=final_quality_status,
+            qualityMessage=final_quality_message,
             imageWidth=loaded_image.width,
             imageHeight=loaded_image.height,
             imageFormat=loaded_image.format,
             imageMode=loaded_image.mode,
             validationPassed=validation_result.passed,
             reasons=validation_result.reasons,
+            status=audit_result['status'],
+            code=audit_result['code'],
+            details=audit_result['details'],
             suggestion=self._build_suggestion(validation_result, quality_details),
             message=message,
             auditResult=audit_result,

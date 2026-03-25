@@ -82,6 +82,9 @@ class DetectResultModel(BaseModel):
     isProcessable: bool | None = None
     validationPassed: bool
     reasons: list[str]
+    status: str | None = None
+    code: str | None = None
+    details: list[dict[str, Any]] | None = None
     qualityStatus: str | None = None
     qualityMessage: str | None = None
     auditResult: dict[str, Any] | None = None

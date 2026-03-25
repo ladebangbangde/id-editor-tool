@@ -10,8 +10,11 @@ from PIL import Image, UnidentifiedImageError
 
 from core.exceptions import (
     AppException,
+    ERROR_EYE_OCCLUDED,
     ERROR_FACE_OCCLUDED,
     ERROR_FACE_TOO_SMALL,
+    ERROR_FACIAL_KEYPOINTS_INCOMPLETE,
+    ERROR_HAND_OCCLUSION,
     ERROR_HEAD_CROPPED,
     ERROR_HEADWEAR_DETECTED,
     ERROR_IMAGE_TOO_BLURRY,
@@ -101,13 +104,16 @@ class ValidationService:
     reason_priority = [
         ERROR_NO_FACE_DETECTED,
         ERROR_MULTIPLE_FACES_DETECTED,
+        ERROR_FACE_OCCLUDED,
+        ERROR_EYE_OCCLUDED,
+        ERROR_FACIAL_KEYPOINTS_INCOMPLETE,
+        ERROR_HAND_OCCLUSION,
+        ERROR_HEADWEAR_DETECTED,
+        ERROR_NOT_SINGLE_FRONTAL_FACE,
         ERROR_IMAGE_TOO_BLURRY,
         ERROR_FACE_TOO_SMALL,
         ERROR_POSE_INVALID,
-        ERROR_FACE_OCCLUDED,
         ERROR_HEAD_CROPPED,
-        ERROR_NOT_SINGLE_FRONTAL_FACE,
-        ERROR_HEADWEAR_DETECTED,
     ]
 
     detect_messages = {
@@ -117,6 +123,9 @@ class ValidationService:
         ERROR_FACE_TOO_SMALL: '人脸区域过小，不符合证件照制作要求',
         ERROR_POSE_INVALID: '人脸姿态不符合证件照要求',
         ERROR_FACE_OCCLUDED: '人脸存在严重遮挡，不符合证件照制作要求',
+        ERROR_EYE_OCCLUDED: '人脸存在明显遮挡，请露出双眼和完整面部后重试',
+        ERROR_FACIAL_KEYPOINTS_INCOMPLETE: '当前照片不符合证件照规范，请重新拍摄',
+        ERROR_HAND_OCCLUSION: '检测到帽子或手部遮挡，不符合证件照要求',
         ERROR_HEAD_CROPPED: '头部截断过于严重，不符合证件照制作要求',
         ERROR_NOT_SINGLE_FRONTAL_FACE: '当前照片不符合证件照规范，请使用正脸、无遮挡照片',
         ERROR_HEADWEAR_DETECTED: '检测到帽子或头部遮挡，不符合证件照要求',
@@ -129,6 +138,9 @@ class ValidationService:
         ERROR_FACE_TOO_SMALL: '人脸区域过小，请上传人物主体更清晰的单人正脸照片',
         ERROR_POSE_INVALID: '人脸姿态不符合要求，请上传单人正脸照片',
         ERROR_FACE_OCCLUDED: '人脸遮挡过于严重，请上传无遮挡的单人正脸照片',
+        ERROR_EYE_OCCLUDED: '人脸存在明显遮挡，请露出双眼和完整面部后重试',
+        ERROR_FACIAL_KEYPOINTS_INCOMPLETE: '当前照片不符合证件照规范，请重新拍摄',
+        ERROR_HAND_OCCLUSION: '检测到帽子或手部遮挡，不符合证件照要求',
         ERROR_HEAD_CROPPED: '头部截断过于严重，请上传头部完整的单人正脸照片',
         ERROR_NOT_SINGLE_FRONTAL_FACE: '当前照片不符合证件照规范，请使用正脸、无遮挡照片',
         ERROR_HEADWEAR_DETECTED: '检测到帽子或头部遮挡，不符合证件照要求',
@@ -262,6 +274,10 @@ class ValidationService:
             audit_code = ordered_reasons[0]
             if ordered_reasons[0] == ERROR_FACE_OCCLUDED:
                 audit_message = '人脸存在明显遮挡，请露出双眼和完整面部后重试'
+            elif ordered_reasons[0] in {ERROR_EYE_OCCLUDED, ERROR_HAND_OCCLUSION}:
+                audit_message = '检测到帽子或手部遮挡，不符合证件照要求'
+            elif ordered_reasons[0] == ERROR_FACIAL_KEYPOINTS_INCOMPLETE:
+                audit_message = '当前照片不符合证件照规范，请重新拍摄'
             elif ordered_reasons[0] == ERROR_NOT_SINGLE_FRONTAL_FACE:
                 audit_message = '当前照片不符合证件照规范，请使用正脸、无遮挡照片'
             else:
@@ -304,8 +320,12 @@ class ValidationService:
         error_code = ordered_reasons[0] if ordered_reasons else ERROR_NO_FACE_DETECTED
         if error_code == ERROR_FACE_OCCLUDED:
             return error_code, '人脸存在明显遮挡，请露出双眼和完整面部后重试'
+        if error_code in {ERROR_EYE_OCCLUDED, ERROR_HAND_OCCLUSION}:
+            return error_code, '检测到帽子或手部遮挡，不符合证件照要求'
+        if error_code == ERROR_FACIAL_KEYPOINTS_INCOMPLETE:
+            return error_code, '当前照片不符合证件照规范，请重新拍摄'
         if error_code == ERROR_HEADWEAR_DETECTED:
-            return error_code, '检测到帽子或头部遮挡，不符合证件照要求'
+            return error_code, '检测到帽子或手部遮挡，不符合证件照要求'
         if error_code == ERROR_NOT_SINGLE_FRONTAL_FACE:
             return error_code, '当前照片不符合证件照规范，请使用正脸、无遮挡照片'
         return error_code, self._build_message(ordered_reasons, passed=False, for_generate=True)

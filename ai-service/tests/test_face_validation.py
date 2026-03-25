@@ -83,7 +83,7 @@ class FaceValidationTestCase(unittest.TestCase):
                     'message': '人脸存在明显遮挡，请露出双眼和完整面部后重试',
                 }
             ],
-            'keypointConfidences': {'eyes': 0.2, 'nose': 0.1, 'mouth': 0.1},
+            'keypointConfidences': {'leftEye': 0.2, 'rightEye': 0.1, 'noseTip': 0.1, 'mouthCorners': 0.1},
         }
         outcome = self.validation_service.validate(
             self.image_shape,
@@ -96,7 +96,12 @@ class FaceValidationTestCase(unittest.TestCase):
         self.assertEqual(outcome.auditStatus, 'failed')
         self.assertEqual(outcome.auditCode, 'FACE_OCCLUDED')
         self.assertGreaterEqual(len(outcome.auditDetails), 1)
-        self.assertIn('eyes', outcome.keypointConfidences)
+        self.assertIn('leftEye', outcome.keypointConfidences)
+
+    def test_generate_error_message_prefers_hand_or_hat_copy(self):
+        code, message = self.validation_service.build_generate_error(['HAND_OCCLUSION'])
+        self.assertEqual(code, 'HAND_OCCLUSION')
+        self.assertEqual(message, '检测到帽子或手部遮挡，不符合证件照要求')
 
     @staticmethod
     def _dummy_image(shape):
