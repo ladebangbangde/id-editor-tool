@@ -18,6 +18,10 @@ from utils.config import get_settings
 class ComplianceDetail:
     code: str
     message: str
+    status: str = 'failed'
+    stage: str = 'compliance'
+    score: float | None = None
+    threshold: float | None = None
 
 
 class ComplianceService:
@@ -31,6 +35,13 @@ class ComplianceService:
         self.mouth_cascade = cv2.CascadeClassifier(cascades + 'haarcascade_mcs_mouth.xml')
         self.smile_cascade = cv2.CascadeClassifier(cascades + 'haarcascade_smile.xml')
         self.profile_cascade = cv2.CascadeClassifier(cascades + 'haarcascade_profileface.xml')
+        self._empty_cascades = {
+            'eyes': self.eye_cascade.empty(),
+            'nose': self.nose_cascade.empty(),
+            'mouth': self.mouth_cascade.empty(),
+            'smile': self.smile_cascade.empty(),
+            'profile': self.profile_cascade.empty(),
+        }
 
     @staticmethod
     def _clamp_roi(image: np.ndarray, box: dict) -> np.ndarray:
@@ -46,8 +57,9 @@ class ComplianceService:
             return 0.0
         return max(0.0, min(1.0, float(raw_weight) / 8.0))
 
-    def _detect_keypoints(self, gray_face: np.ndarray) -> tuple[dict[str, float], list[ComplianceDetail]]:
+    def _detect_keypoints(self, gray_face: np.ndarray) -> tuple[dict[str, float], list[ComplianceDetail], list[str]]:
         details: list[ComplianceDetail] = []
+        warnings: list[str] = []
 
         def pick_confidence(cascade: cv2.CascadeClassifier, min_size: tuple[int, int]) -> float:
             if cascade.empty():
@@ -80,14 +92,22 @@ class ComplianceService:
         }
 
         missing = [k for k, v in conf_map.items() if v < self.settings.landmark_confidence_threshold]
-        if missing:
+        if 'eyes' in missing:
             details.append(
                 ComplianceDetail(
                     code=ERROR_FACIAL_KEYPOINTS_INCOMPLETE,
-                    message='人脸关键点不完整，请确保双眼、鼻尖、嘴部清晰可见',
+                    message='双眼关键点置信度不足，请确保双眼清晰可见',
+                    status='failed',
+                    stage='keypoint_detection',
                 )
             )
-        return conf_map, details
+        non_critical_missing = [item for item in missing if item != 'eyes']
+        if non_critical_missing:
+            warnings.append(f"关键点低置信度(非关键阻断): {', '.join(non_critical_missing)}")
+        if self._empty_cascades['nose'] or self._empty_cascades['mouth']:
+            unavailable = [name for name in ('nose', 'mouth') if self._empty_cascades[name]]
+            warnings.append(f"关键点分类器缺失: {', '.join(unavailable)}")
+        return conf_map, details, warnings
 
     def _detect_pose_and_single_face(self, gray_image: np.ndarray, face_box: dict, face_count: int) -> list[ComplianceDetail]:
         details: list[ComplianceDetail] = []
@@ -110,6 +130,8 @@ class ComplianceService:
                 ComplianceDetail(
                     code=ERROR_NOT_SINGLE_FRONTAL_FACE,
                     message='当前照片不符合证件照规范，请使用正脸、无遮挡照片',
+                    status='failed',
+                    stage='compliance_pose',
                 )
             )
         return details
@@ -128,6 +150,10 @@ class ComplianceService:
                 ComplianceDetail(
                     code=ERROR_HEADWEAR_DETECTED,
                     message='检测到帽子或头部遮挡，不符合证件照要求',
+                    status='failed',
+                    stage='compliance_occlusion',
+                    score=round(edge_ratio, 3),
+                    threshold=self.settings.headwear_edge_ratio_threshold,
                 )
             )
         return details
@@ -142,17 +168,22 @@ class ComplianceService:
                     {
                         'code': ERROR_NOT_SINGLE_FRONTAL_FACE,
                         'message': '当前照片不符合证件照规范，请使用正脸、无遮挡照片',
+                        'status': 'failed',
+                        'stage': 'compliance_pose',
                     }
                 ],
                 'keypointConfidences': {},
+                'warnings': [],
             }
 
         details: list[ComplianceDetail] = []
+        warnings: list[str] = []
         face_roi = self._clamp_roi(image_bgr, face_box)
         gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
 
-        keypoints, keypoint_issues = self._detect_keypoints(gray_face)
+        keypoints, keypoint_issues, keypoint_warnings = self._detect_keypoints(gray_face)
         details.extend(keypoint_issues)
+        warnings.extend(keypoint_warnings)
         details.extend(self._detect_pose_and_single_face(gray_image, face_box, face_count))
         details.extend(self._detect_hat_or_head_occlusion(face_roi))
 
@@ -162,6 +193,8 @@ class ComplianceService:
                 ComplianceDetail(
                     code=ERROR_FACE_OCCLUDED,
                     message='人脸存在明显遮挡，请露出双眼和完整面部后重试',
+                    status='failed',
+                    stage='compliance_occlusion',
                 )
             )
 
@@ -171,8 +204,37 @@ class ComplianceService:
                 'status': 'failed',
                 'code': primary.code,
                 'message': primary.message,
-                'details': [{'code': item.code, 'message': item.message} for item in details],
+                'details': [
+                    {
+                        'code': item.code,
+                        'message': item.message,
+                        'status': item.status,
+                        'stage': item.stage,
+                        'score': item.score,
+                        'threshold': item.threshold,
+                    }
+                    for item in details
+                ],
                 'keypointConfidences': keypoints,
+                'warnings': warnings,
+            }
+
+        if warnings:
+            return {
+                'status': 'warning',
+                'code': 'COMPLIANCE_WARNING',
+                'message': '合规审核通过（存在提醒项）',
+                'details': [
+                    {
+                        'code': 'COMPLIANCE_WARNING',
+                        'message': warning,
+                        'status': 'warning',
+                        'stage': 'keypoint_detection',
+                    }
+                    for warning in warnings
+                ],
+                'keypointConfidences': keypoints,
+                'warnings': warnings,
             }
 
         return {
@@ -181,4 +243,5 @@ class ComplianceService:
             'message': '合规性审核通过',
             'details': [],
             'keypointConfidences': keypoints,
+            'warnings': [],
         }

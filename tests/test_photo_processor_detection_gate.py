@@ -70,6 +70,9 @@ def test_build_detect_data_includes_usability_fields(processor: PhotoProcessor) 
     assert payload.warningCodes == ['BAD_COMPOSITION']
     assert payload.compositionAccepted is False
     assert payload.warning == '人脸位置略偏，后续裁切存在一定风险'
+    assert payload.processStatus == 'success'
+    assert payload.complianceStatus == 'warning'
+    assert '不建议直接用于正式证件照提交' in payload.complianceMessage
 
 
 def test_generate_blocks_failed_source_image_before_pipeline(processor: PhotoProcessor) -> None:
@@ -94,3 +97,31 @@ def test_generate_blocks_failed_source_image_before_pipeline(processor: PhotoPro
     assert exc_info.value.details['resultLevel'] == 'FAIL'
     assert exc_info.value.details['reasons'][0]['code'] == 'EYE_OCCLUDED'
     assert exc_info.value.details['suggestions'] == ['请露出完整双眼与面部']
+
+
+def test_generate_returns_dual_status_for_warning_result(processor: PhotoProcessor) -> None:
+    image = Image.new('RGB', (800, 1000), 'white')
+    processor.detector.detect = lambda _image: build_result(
+        status=WARNING,
+        can_generate=True,
+        recommended=False,
+        warnings=['单眼疑似遮挡，建议更换无遮挡正脸照片'],
+        warning_codes=['EYE_OCCLUDED'],
+    )
+    processor.segmenter.remove_background = lambda _image: image.convert('RGBA')
+    processor.cropper.crop = lambda rgba, spec, primary_face: rgba
+    processor.background.apply = lambda cropped_rgba, background_color: Image.new('RGB', (413, 579), 'white')
+    processor.enhancer.enhance = lambda img: img
+
+    payload = processor.generate(
+        image=image,
+        size_key='one_inch',
+        background_color='blue',
+        enhance=False,
+        save_output=False,
+    )
+
+    assert payload.processStatus == 'generated'
+    assert payload.complianceStatus == 'warning'
+    assert payload.safeToSubmit is False
+    assert '不建议直接用于正式证件照提交' in payload.complianceMessage
