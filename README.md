@@ -11,7 +11,7 @@
 - `POST /photo/process`：`/generate` 的兼容别名，处理前自动执行预检。
 - `GET /photo/specs`：返回 tool 当前支持的 canonical `sizeKey`、像素/毫米尺寸、aliases 与是否支持自定义尺寸。
 - `POST /layout`：基于原图/共享路径/已生成证件照生成 6 寸排版图。
-- `POST /formal-wear`：兼容 server 当前一键换装联调入口，使用纯代码绘制的轻量正装图层生成预览图与高清图。
+- `POST /formal-wear`：兼容占位接口（换装功能已下线，固定返回下线提示，不影响主链路）。
 - `/uploads/...`：直接访问共享上传目录中的静态结果。
 - 自动按日期 + 任务 ID 保存输出，便于肉眼查看效果。
 - 支持基础调试中间文件保存：前景图、透明裁剪图。
@@ -338,7 +338,7 @@ HD_QUALITY=95
 - `saveOutput`
 - `paper`，当前支持 `6inch`
 
-### 5. 一键换装兼容接口
+### 5. 历史换装接口兼容占位
 
 `POST /formal-wear`
 
@@ -354,25 +354,23 @@ HD_QUALITY=95
 
 说明：
 
-- 当前该接口优先用于兼容 `id-editor-server` 已上线的 `POST /formal-wear` 调用路径。
-- 不会替换或删除原有 `/detect`、`/generate`、`/layout` 证件照主链路。
-- 当前会基于人脸框、抠图结果和纯代码几何绘制，生成轻量版西装 / 衬衫 / 领口 / 领带等正装图层。
-- 当前 MVP 支持 `gender=male/female`、`style=standard/business/simple`、`color=black/navy/gray`。
+- 为避免 server 误调用旧接口导致 500，当前保留 `POST /formal-wear` 占位路由。
+- 该接口固定返回 `FORMAL_WEAR_OFFLINE` 与“换装功能已下线”提示，不再执行任何换装推理和任务处理。
+- `/detect`、`/generate`、`/layout` 证件照主链路不受影响。
 
 示例返回重点字段：
 
 ```json
 {
-  "success": true,
-  "message": "ok",
+  "success": false,
+  "message": "换装功能已下线",
+  "error": {
+    "code": "FORMAL_WEAR_OFFLINE",
+    "message": "换装功能已下线"
+  },
   "data": {
-    "taskId": "gen_20260322_120000_ab12cd34",
-    "previewUrl": "/uploads/preview/20260322/.../id_photo_preview.jpg",
-    "hdUrl": "/uploads/hd/20260322/.../id_photo_hd.png",
-    "gender": "female",
-    "style": "formal",
-    "color": "blue",
-    "warnings": []
+    "status": "offline",
+    "message": "换装功能已下线"
   }
 }
 ```
@@ -452,7 +450,7 @@ curl -X POST http://127.0.0.1:8000/layout \
   -F "saveOutput=true"
 ```
 
-### formal-wear
+### formal-wear（兼容占位）
 
 ```bash
 curl -X POST http://127.0.0.1:8000/formal-wear \
