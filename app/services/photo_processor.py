@@ -66,6 +66,17 @@ class PhotoProcessor:
         return resolved_path, load_image_from_path(resolved_path)
 
     def _build_detect_data(self, result: FaceDetectionResult) -> DetectData:
+        compliance_status = self._to_compliance_status(result.status)
+        compliance_message = self._compliance_message(compliance_status)
+        compliance_details = [
+            {
+                'code': issue.code,
+                'message': issue.message,
+                'severity': issue.severity,
+            }
+            for issue in result.issues
+            if issue.severity in {'WARNING', 'FAIL'}
+        ]
         return DetectData(
             hasFace=result.has_face,
             faceCount=result.face_count,
@@ -110,7 +121,29 @@ class PhotoProcessor:
             secondaryWarnings=result.secondary_warnings,
             qualityStatus=result.quality_status,
             qualityMessage=result.quality_message,
+            processStatus='success',
+            processMessage='图片检测流程已完成',
+            complianceStatus=compliance_status,
+            complianceMessage=compliance_message,
+            complianceDetails=compliance_details,
         )
+
+    @staticmethod
+    def _to_compliance_status(status: str) -> str:
+        mapping = {
+            'PASS': 'passed',
+            'WARNING': 'warning',
+            'FAIL': 'failed',
+        }
+        return mapping.get(status, 'warning')
+
+    @staticmethod
+    def _compliance_message(compliance_status: str) -> str:
+        if compliance_status == 'passed':
+            return '满足证件照合规要求'
+        if compliance_status == 'warning':
+            return '图片已生成，但存在合规风险，不建议直接用于正式证件照提交'
+        return '图片已生成，但不符合证件照规范，不建议用于正式提交'
 
     def detect(self, image: Image.Image) -> DetectData:
         return self._build_detect_data(self.detector.detect(image))
@@ -225,6 +258,10 @@ class PhotoProcessor:
 
         warnings = detect_result.warnings.copy()
         detect_summary = self._build_detect_data(detect_result)
+        compliance_status = self._to_compliance_status(detect_result.status)
+        compliance_message = self._compliance_message(compliance_status)
+        compliance_details = detect_summary.complianceDetails
+        safe_to_submit = compliance_status == 'passed'
         preview_info = self._file_info(preview_path) if save_output else FileInfo(path='', url='')
         hd_info = self._file_info(hd_path) if save_output else FileInfo(path='', url='')
         return GenerateData(
@@ -254,6 +291,12 @@ class PhotoProcessor:
             hdFormat='PNG',
             hdQuality=100,
             intermediateFiles=intermediate_files,
+            processStatus='generated',
+            processMessage='图片已生成',
+            complianceStatus=compliance_status,
+            complianceMessage=compliance_message,
+            complianceDetails=compliance_details,
+            safeToSubmit=safe_to_submit,
         )
 
     def layout_from_photo(self, photo: Image.Image, spec: PhotoSpec, paper: str) -> tuple[Image.Image, int]:
