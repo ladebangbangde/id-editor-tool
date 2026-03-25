@@ -119,8 +119,12 @@ class PhotoProcessor:
             primaryIssue=result.primary_issue,
             primaryMessage=result.primary_message,
             secondaryWarnings=result.secondary_warnings,
-            qualityStatus=result.quality_status,
-            qualityMessage=result.quality_message,
+            qualityStatus=result.status,
+            qualityMessage=(
+                result.quality_message
+                if compliance_status == 'passed'
+                else compliance_message
+            ),
             processStatus='success',
             processMessage='图片检测流程已完成',
             complianceStatus=compliance_status,
@@ -280,8 +284,12 @@ class PhotoProcessor:
             primaryIssue=detect_result.primary_issue,
             primaryMessage=detect_result.primary_message,
             secondaryWarnings=detect_result.secondary_warnings,
-            qualityStatus=detect_result.quality_status,
-            qualityMessage=detect_result.quality_message,
+            qualityStatus=detect_result.status,
+            qualityMessage=(
+                detect_result.quality_message
+                if compliance_status == 'passed'
+                else compliance_message
+            ),
             previewWidth=preview_image.width,
             previewHeight=preview_image.height,
             previewFormat='JPEG',

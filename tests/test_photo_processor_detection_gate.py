@@ -124,4 +124,6 @@ def test_generate_returns_dual_status_for_warning_result(processor: PhotoProcess
     assert payload.processStatus == 'generated'
     assert payload.complianceStatus == 'warning'
     assert payload.safeToSubmit is False
+    assert payload.qualityStatus == 'WARNING'
     assert '不建议直接用于正式证件照提交' in payload.complianceMessage
+    assert '不建议直接用于正式证件照提交' in payload.qualityMessage

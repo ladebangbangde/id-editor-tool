@@ -211,6 +211,60 @@ class FaceValidationTestCase(unittest.TestCase):
         self.assertFalse(outcome.passed)
         self.assertIn(ERROR_FACE_OCCLUDED, outcome.reasons)
 
+    def test_regression_case_previously_warning_now_not_failed(self):
+        self.validation_service.compliance_service.evaluate = lambda **_: {
+            'status': 'warning',
+            'code': 'COMPLIANCE_WARNING',
+            'message': '合规审核通过（存在提醒项）',
+            'details': [
+                {
+                    'code': 'COMPLIANCE_WARNING',
+                    'message': '关键点低置信度(非关键阻断): nose,mouth',
+                    'status': 'warning',
+                    'stage': 'keypoint_detection',
+                }
+            ],
+            'warnings': ['关键点分类器缺失: nose,mouth'],
+            'keypointConfidences': {'eyes': 0.81, 'nose': 0.0, 'mouth': 0.0},
+        }
+        outcome = self.validation_service.validate(
+            self.image_shape,
+            [{'x': 240, 'y': 180, 'width': 260, 'height': 260}],
+            blur_score=0.95,
+            image_bgr=self._dummy_image(self.image_shape),
+            gray_image=self._dummy_image(self.image_shape[:2]),
+        )
+        self.assertTrue(outcome.passed)
+        self.assertEqual(outcome.auditStatus, 'passed')
+        warning_details = [item for item in outcome.auditDetails if item.get('status') == 'warning']
+        self.assertGreaterEqual(len(warning_details), 1)
+
+    def test_regression_case_still_blocks_clear_occlusion(self):
+        self.validation_service.compliance_service.evaluate = lambda **_: {
+            'status': 'failed',
+            'code': ERROR_FACE_OCCLUDED,
+            'message': '人脸存在明显遮挡，请露出双眼和完整面部后重试',
+            'details': [
+                {
+                    'code': ERROR_FACE_OCCLUDED,
+                    'message': '人脸存在明显遮挡，请露出双眼和完整面部后重试',
+                    'status': 'failed',
+                    'stage': 'compliance_occlusion',
+                }
+            ],
+            'warnings': [],
+            'keypointConfidences': {'eyes': 0.21, 'nose': 0.2, 'mouth': 0.18},
+        }
+        outcome = self.validation_service.validate(
+            self.image_shape,
+            [{'x': 240, 'y': 180, 'width': 260, 'height': 260}],
+            blur_score=0.95,
+            image_bgr=self._dummy_image(self.image_shape),
+            gray_image=self._dummy_image(self.image_shape[:2]),
+        )
+        self.assertFalse(outcome.passed)
+        self.assertIn(ERROR_FACE_OCCLUDED, outcome.reasons)
+
     @staticmethod
     def _dummy_image(shape):
         import numpy as np
