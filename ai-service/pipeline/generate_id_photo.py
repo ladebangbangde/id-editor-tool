@@ -16,11 +16,13 @@ from services.validation_service import ValidationService
 from utils.config import get_settings
 from utils.file_utils import build_output_path, public_url_for_path, to_url_like_path
 from utils.image_utils import save_pil_image
+from utils.logger import get_logger
 
 
 class GenerateIdPhotoPipeline:
     def __init__(self):
         self.settings = get_settings()
+        self.logger = get_logger()
         self.detect_service = DetectService()
         self.segment_service = SegmentService()
         self.background_service = BackgroundService()
@@ -97,6 +99,14 @@ class GenerateIdPhotoPipeline:
             size_tpl.pixelHeight,
             face_box=detect_result.primaryFaceBox,
         )
+        self.logger.info(
+            '[detect-chain] crop_stage image_id={} method={} crop_box={} target={}x{}',
+            image_id,
+            crop_result.method,
+            crop_result.cropBox,
+            crop_result.targetWidth,
+            crop_result.targetHeight,
+        )
         process_notes.append(crop_result.method)
         if background_result.get('note'):
             process_notes.append(background_result['note'])
@@ -116,6 +126,14 @@ class GenerateIdPhotoPipeline:
             expected_output_size=(size_tpl.pixelWidth, size_tpl.pixelHeight),
             face_box=detect_result.primaryFaceBox,
             blur_score=getattr(detect_result, 'blurScore', None),
+        )
+        self.logger.info(
+            '[detect-chain] final_mapping image_id={} quality_status={} audit_status={} fallback_used={} notes={}',
+            image_id,
+            quality_details['qualityStatus'],
+            getattr(detect_result, 'auditResult', {}).get('status') if hasattr(detect_result, 'auditResult') else None,
+            whether_fallback_used,
+            process_notes,
         )
 
         print_result = None

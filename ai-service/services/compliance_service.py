@@ -6,10 +6,8 @@ import cv2
 import numpy as np
 
 from core.exceptions import (
-    ERROR_EYE_OCCLUDED,
     ERROR_FACE_OCCLUDED,
     ERROR_FACIAL_KEYPOINTS_INCOMPLETE,
-    ERROR_HAND_OCCLUSION,
     ERROR_HEADWEAR_DETECTED,
     ERROR_NOT_SINGLE_FRONTAL_FACE,
 )
@@ -20,6 +18,10 @@ from utils.config import get_settings
 class ComplianceDetail:
     code: str
     message: str
+    status: str = 'failed'
+    stage: str = 'compliance'
+    score: float | None = None
+    threshold: float | None = None
 
 
 class ComplianceService:
@@ -33,6 +35,13 @@ class ComplianceService:
         self.mouth_cascade = cv2.CascadeClassifier(cascades + 'haarcascade_mcs_mouth.xml')
         self.smile_cascade = cv2.CascadeClassifier(cascades + 'haarcascade_smile.xml')
         self.profile_cascade = cv2.CascadeClassifier(cascades + 'haarcascade_profileface.xml')
+        self._empty_cascades = {
+            'eyes': self.eye_cascade.empty(),
+            'nose': self.nose_cascade.empty(),
+            'mouth': self.mouth_cascade.empty(),
+            'smile': self.smile_cascade.empty(),
+            'profile': self.profile_cascade.empty(),
+        }
 
     @staticmethod
     def _clamp_roi(image: np.ndarray, box: dict) -> np.ndarray:
@@ -48,14 +57,15 @@ class ComplianceService:
             return 0.0
         return max(0.0, min(1.0, float(raw_weight) / 8.0))
 
-    def _detect_keypoints(self, gray_face: np.ndarray) -> tuple[dict[str, float], list[ComplianceDetail]]:
+    def _detect_keypoints(self, gray_face: np.ndarray) -> tuple[dict[str, float], list[ComplianceDetail], list[str]]:
         details: list[ComplianceDetail] = []
+        warnings: list[str] = []
 
-        def detect_objects(cascade: cv2.CascadeClassifier, min_size: tuple[int, int]) -> tuple[list[tuple[int, int, int, int]], list[float]]:
+        def pick_confidence(cascade: cv2.CascadeClassifier, min_size: tuple[int, int]) -> float:
             if cascade.empty():
-                return [], []
+                return 0.0
             try:
-                rects, _reject, weights = cascade.detectMultiScale3(
+                _rects, _reject, weights = cascade.detectMultiScale3(
                     gray_face,
                     scaleFactor=1.1,
                     minNeighbors=3,
@@ -63,54 +73,41 @@ class ComplianceService:
                     outputRejectLevels=True,
                 )
             except Exception:
-                return [], []
-            norm_rects = [tuple(int(v) for v in r) for r in rects] if len(rects) else []
-            norm_weights = [self._safe_confidence(float(w)) for w in weights] if len(weights) else []
-            return norm_rects, norm_weights
+                weights = []
+            if len(weights) == 0:
+                return 0.0
+            return self._safe_confidence(max(float(w) for w in weights))
 
         face_h, face_w = gray_face.shape[:2]
-        eye_rects, eye_weights = detect_objects(self.eye_cascade, (max(12, face_w // 9), max(12, face_h // 10)))
-        eye_candidates = [
-            (r, w) for r, w in zip(eye_rects, eye_weights) if r[1] < int(face_h * 0.62)
-        ]
-        eye_candidates = sorted(eye_candidates, key=lambda item: item[1], reverse=True)[:2]
-        left_eye_conf = eye_candidates[0][1] if len(eye_candidates) >= 1 else 0.0
-        right_eye_conf = eye_candidates[1][1] if len(eye_candidates) >= 2 else 0.0
-
-        _nose_rects, nose_weights = detect_objects(self.nose_cascade, (max(16, face_w // 8), max(16, face_h // 8)))
-        nose_conf = max(nose_weights) if nose_weights else 0.0
-
-        _mouth_rects, mouth_weights = detect_objects(self.mouth_cascade, (max(20, face_w // 7), max(20, face_h // 8)))
-        if not mouth_weights:
-            _smile_rects, mouth_weights = detect_objects(self.smile_cascade, (max(20, face_w // 7), max(20, face_h // 8)))
-        mouth_conf = max(mouth_weights) if mouth_weights else 0.0
+        eye_conf = pick_confidence(self.eye_cascade, (max(12, face_w // 9), max(12, face_h // 10)))
+        nose_conf = pick_confidence(self.nose_cascade, (max(16, face_w // 8), max(16, face_h // 8)))
+        mouth_conf = pick_confidence(self.mouth_cascade, (max(20, face_w // 7), max(20, face_h // 8)))
+        if mouth_conf <= 0:
+            mouth_conf = pick_confidence(self.smile_cascade, (max(20, face_w // 7), max(20, face_h // 8)))
 
         conf_map = {
-            'leftEye': round(left_eye_conf, 3),
-            'rightEye': round(right_eye_conf, 3),
-            'noseTip': round(nose_conf, 3),
-            'mouthCorners': round(mouth_conf, 3),
+            'eyes': eye_conf,
+            'nose': nose_conf,
+            'mouth': mouth_conf,
         }
 
-        if (
-            left_eye_conf < self.settings.eye_confidence_threshold
-            or right_eye_conf < self.settings.eye_confidence_threshold
-        ):
-            details.append(
-                ComplianceDetail(
-                    code=ERROR_EYE_OCCLUDED,
-                    message='人脸存在明显遮挡，请露出双眼和完整面部后重试',
-                )
-            )
         missing = [k for k, v in conf_map.items() if v < self.settings.landmark_confidence_threshold]
-        if missing:
+        if 'eyes' in missing:
             details.append(
                 ComplianceDetail(
                     code=ERROR_FACIAL_KEYPOINTS_INCOMPLETE,
-                    message='当前照片不符合证件照规范，请重新拍摄',
+                    message='双眼关键点置信度不足，请确保双眼清晰可见',
+                    status='failed',
+                    stage='keypoint_detection',
                 )
             )
-        return conf_map, details
+        non_critical_missing = [item for item in missing if item != 'eyes']
+        if non_critical_missing:
+            warnings.append(f"关键点低置信度(非关键阻断): {', '.join(non_critical_missing)}")
+        if self._empty_cascades['nose'] or self._empty_cascades['mouth']:
+            unavailable = [name for name in ('nose', 'mouth') if self._empty_cascades[name]]
+            warnings.append(f"关键点分类器缺失: {', '.join(unavailable)}")
+        return conf_map, details, warnings
 
     def _detect_pose_and_single_face(self, gray_image: np.ndarray, face_box: dict, face_count: int) -> list[ComplianceDetail]:
         details: list[ComplianceDetail] = []
@@ -133,6 +130,8 @@ class ComplianceService:
                 ComplianceDetail(
                     code=ERROR_NOT_SINGLE_FRONTAL_FACE,
                     message='当前照片不符合证件照规范，请使用正脸、无遮挡照片',
+                    status='failed',
+                    stage='compliance_pose',
                 )
             )
         return details
@@ -150,38 +149,11 @@ class ComplianceService:
             details.append(
                 ComplianceDetail(
                     code=ERROR_HEADWEAR_DETECTED,
-                    message='检测到帽子或手部遮挡，不符合证件照要求',
-                )
-            )
-        return details
-
-    def _detect_hand_occlusion(self, face_roi: np.ndarray) -> list[ComplianceDetail]:
-        details: list[ComplianceDetail] = []
-        hsv = cv2.cvtColor(face_roi, cv2.COLOR_BGR2HSV)
-        # 经验肤色范围，仅用于检测“手进入面部区域”的遮挡风险
-        lower = np.array([0, 25, 45], dtype=np.uint8)
-        upper = np.array([30, 190, 255], dtype=np.uint8)
-        skin_mask = cv2.inRange(hsv, lower, upper)
-
-        h, w = skin_mask.shape[:2]
-        band_w = max(1, int(w * 0.22))
-        left_band = skin_mask[:, :band_w]
-        right_band = skin_mask[:, w - band_w :]
-        side_skin_ratio = max(
-            float(np.count_nonzero(left_band)) / max(left_band.size, 1),
-            float(np.count_nonzero(right_band)) / max(right_band.size, 1),
-        )
-
-        eye_band = face_roi[int(h * 0.2) : int(h * 0.58), int(w * 0.15) : int(w * 0.85)]
-        key_variance = float(np.var(cv2.cvtColor(eye_band, cv2.COLOR_BGR2GRAY))) if eye_band.size else 0.0
-        if (
-            side_skin_ratio > self.settings.hand_occlusion_skin_ratio_threshold
-            and key_variance < self.settings.key_region_min_variance
-        ):
-            details.append(
-                ComplianceDetail(
-                    code=ERROR_HAND_OCCLUSION,
-                    message='检测到帽子或手部遮挡，不符合证件照要求',
+                    message='检测到帽子或头部遮挡，不符合证件照要求',
+                    status='failed',
+                    stage='compliance_occlusion',
+                    score=round(edge_ratio, 3),
+                    threshold=self.settings.headwear_edge_ratio_threshold,
                 )
             )
         return details
@@ -196,27 +168,33 @@ class ComplianceService:
                     {
                         'code': ERROR_NOT_SINGLE_FRONTAL_FACE,
                         'message': '当前照片不符合证件照规范，请使用正脸、无遮挡照片',
+                        'status': 'failed',
+                        'stage': 'compliance_pose',
                     }
                 ],
                 'keypointConfidences': {},
+                'warnings': [],
             }
 
         details: list[ComplianceDetail] = []
+        warnings: list[str] = []
         face_roi = self._clamp_roi(image_bgr, face_box)
         gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
 
-        keypoints, keypoint_issues = self._detect_keypoints(gray_face)
+        keypoints, keypoint_issues, keypoint_warnings = self._detect_keypoints(gray_face)
         details.extend(keypoint_issues)
+        warnings.extend(keypoint_warnings)
         details.extend(self._detect_pose_and_single_face(gray_image, face_box, face_count))
         details.extend(self._detect_hat_or_head_occlusion(face_roi))
-        details.extend(self._detect_hand_occlusion(face_roi))
 
-        has_keypoint_issue = any(item.code in {ERROR_FACIAL_KEYPOINTS_INCOMPLETE, ERROR_EYE_OCCLUDED} for item in details)
+        has_keypoint_issue = any(item.code == ERROR_FACIAL_KEYPOINTS_INCOMPLETE for item in details)
         if has_keypoint_issue:
             details.append(
                 ComplianceDetail(
                     code=ERROR_FACE_OCCLUDED,
                     message='人脸存在明显遮挡，请露出双眼和完整面部后重试',
+                    status='failed',
+                    stage='compliance_occlusion',
                 )
             )
 
@@ -226,8 +204,37 @@ class ComplianceService:
                 'status': 'failed',
                 'code': primary.code,
                 'message': primary.message,
-                'details': [{'code': item.code, 'message': item.message} for item in details],
+                'details': [
+                    {
+                        'code': item.code,
+                        'message': item.message,
+                        'status': item.status,
+                        'stage': item.stage,
+                        'score': item.score,
+                        'threshold': item.threshold,
+                    }
+                    for item in details
+                ],
                 'keypointConfidences': keypoints,
+                'warnings': warnings,
+            }
+
+        if warnings:
+            return {
+                'status': 'warning',
+                'code': 'COMPLIANCE_WARNING',
+                'message': '合规审核通过（存在提醒项）',
+                'details': [
+                    {
+                        'code': 'COMPLIANCE_WARNING',
+                        'message': warning,
+                        'status': 'warning',
+                        'stage': 'keypoint_detection',
+                    }
+                    for warning in warnings
+                ],
+                'keypointConfidences': keypoints,
+                'warnings': warnings,
             }
 
         return {
@@ -236,4 +243,5 @@ class ComplianceService:
             'message': '合规性审核通过',
             'details': [],
             'keypointConfidences': keypoints,
+            'warnings': [],
         }

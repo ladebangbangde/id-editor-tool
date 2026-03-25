@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 import cv2
+from PIL import Image, ImageOps
 
 from core.exceptions import ERROR_FACE_OCCLUDED, ERROR_POSE_INVALID
 from constants.status import QUALITY_STATUS_FAILED, QUALITY_STATUS_WARNING
 from services.quality_service import QualityService
 from services.validation_service import LoadedImage, ValidationOutcome, ValidationService
+from utils.logger import get_logger
 
 
 @dataclass
@@ -55,6 +57,7 @@ class DetectService:
     def __init__(self) -> None:
         self.validation_service = ValidationService()
         self.quality_service = QualityService()
+        self.logger = get_logger()
         self.face_detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
@@ -91,11 +94,31 @@ class DetectService:
         return validation_result.message
 
     def detect_from_loaded_image(self, image_id: str, loaded_image: LoadedImage) -> DetectOutcome:
+        self.logger.info(
+            '[detect-chain] image_read image_id={} size={}x{} format={} mode={}',
+            image_id,
+            loaded_image.width,
+            loaded_image.height,
+            loaded_image.format,
+            loaded_image.mode,
+        )
         image_bgr = cv2.cvtColor(loaded_image.image_np, cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
         faces = self.face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
         normalized_faces = self._normalize_faces(faces)
+        self.logger.info(
+            '[detect-chain] face_detection image_id={} face_count={} boxes={}',
+            image_id,
+            len(normalized_faces),
+            normalized_faces,
+        )
         blur_score = self._calc_blur_score(image_bgr)
+        self.logger.info(
+            '[detect-chain] quality_detection image_id={} blur_score={} blur_threshold={}',
+            image_id,
+            blur_score,
+            self.quality_service.settings.blur_score_threshold,
+        )
         validation_result: ValidationOutcome = self.validation_service.validate(
             image_shape=image_bgr.shape,
             faces=normalized_faces,
@@ -104,6 +127,14 @@ class DetectService:
             gray_image=gray,
         )
         quality_details = self.quality_service.evaluate_details(loaded_image.image)
+        self.logger.info(
+            '[detect-chain] compliance_and_mapping image_id={} validation_passed={} audit_status={} reasons={} details={}',
+            image_id,
+            validation_result.passed,
+            validation_result.auditStatus,
+            validation_result.reasons,
+            validation_result.auditDetails,
+        )
 
         if validation_result.passed:
             message = '检测完成，图片可进入证件照处理流程'
@@ -169,10 +200,9 @@ class DetectService:
 
     def detect(self, image_id: str, image_path: str) -> DetectOutcome:
         import numpy as np
-        from PIL import Image
 
         image = Image.open(image_path)
-        rgb = image.convert('RGB')
+        rgb = ImageOps.exif_transpose(image).convert('RGB')
         loaded = LoadedImage(
             filename=image_path,
             content_type='image/jpeg',

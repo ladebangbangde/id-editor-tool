@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from core.exceptions import (
     AppException,
@@ -30,6 +30,7 @@ from services.compliance_service import ComplianceService
 from services.face_postprocess_service import FacePostprocessService
 from services.quality_service import QualityService
 from utils.config import get_settings
+from utils.logger import get_logger
 
 
 @dataclass
@@ -148,6 +149,7 @@ class ValidationService:
 
     def __init__(self) -> None:
         self.settings = get_settings()
+        self.logger = get_logger()
         self.quality_service = QualityService()
         self.face_postprocess_service = FacePostprocessService()
         self.compliance_service = ComplianceService()
@@ -177,6 +179,12 @@ class ValidationService:
 
         try:
             image = Image.open(BytesIO(file_bytes))
+            exif_orientation = None
+            try:
+                exif_orientation = image.getexif().get(274)
+            except Exception:
+                exif_orientation = None
+            image = ImageOps.exif_transpose(image)
             image.load()
         except (UnidentifiedImageError, OSError) as exc:
             raise AppException('图片解析失败，请确认文件未损坏', ERROR_INVALID_IMAGE, 400) from exc
@@ -189,6 +197,14 @@ class ValidationService:
                 ERROR_IMAGE_TOO_SMALL,
                 400,
             )
+        self.logger.info(
+            '[detect-chain] preprocess image_read filename={} exif_orientation={} final_size={}x{} mode={}',
+            filename,
+            exif_orientation,
+            width,
+            height,
+            image.mode,
+        )
 
         return LoadedImage(
             filename=filename or f'upload.{guessed_kind}',
@@ -250,8 +266,18 @@ class ValidationService:
                     face_box=primary_face_box,
                     face_count=face_count,
                 )
-                for detail in compliance_result['details']:
-                    reasons.append(detail['code'])
+                if compliance_result['status'] == 'failed':
+                    for detail in compliance_result['details']:
+                        if detail.get('status', 'failed') == 'failed':
+                            reasons.append(detail['code'])
+                self.logger.info(
+                    '[detect-chain] compliance_result status={} code={} keypoints={} warnings={} details={}',
+                    compliance_result['status'],
+                    compliance_result['code'],
+                    compliance_result.get('keypointConfidences', {}),
+                    compliance_result.get('warnings', []),
+                    compliance_result.get('details', []),
+                )
             else:
                 compliance_result = {
                     'status': 'warning',
@@ -259,6 +285,7 @@ class ValidationService:
                     'message': '未执行合规性审核',
                     'details': [],
                     'keypointConfidences': {},
+                    'warnings': ['未执行合规性审核'],
                 }
 
         ordered_reasons = [reason for reason in self.reason_priority if reason in reasons]
@@ -285,6 +312,15 @@ class ValidationService:
         compliance_details = compliance_result['details'] if 'compliance_result' in locals() else []
         compliance_codes = {item['code'] for item in compliance_details}
         audit_details = list(compliance_details)
+        for warning in compliance_result.get('warnings', []) if 'compliance_result' in locals() else []:
+            audit_details.append(
+                {
+                    'code': 'COMPLIANCE_WARNING',
+                    'message': warning,
+                    'status': 'warning',
+                    'stage': 'keypoint_detection',
+                }
+            )
         for reason in ordered_reasons:
             if reason in compliance_codes:
                 continue
@@ -292,6 +328,8 @@ class ValidationService:
                 {
                     'code': reason,
                     'message': self.detect_messages.get(reason, '图片不符合证件照制作要求'),
+                    'status': 'failed',
+                    'stage': 'validation',
                 }
             )
         return ValidationOutcome(
