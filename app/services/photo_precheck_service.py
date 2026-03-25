@@ -62,6 +62,8 @@ class PhotoPrecheckService:
         'HEAD_SHOULDER_INCOMPLETE': '头肩区域缺失严重',
         'NOT_SUITABLE_PORTRAIT': '图片不适合做人像处理',
         'EXTREME_LIGHTING': '光照异常严重',
+        'EYE_OCCLUDED': '眼部遮挡明显',
+        'HAND_OCCLUSION': '手部遮挡面部',
     }
 
     ISSUE_PRIORITY = {
@@ -75,6 +77,8 @@ class PhotoPrecheckService:
         'JEWELRY_DETECTED': 74,
         'EXTREME_LIGHTING': 70,
         'NOT_SUITABLE_PORTRAIT': 60,
+        'HAND_OCCLUSION': 86,
+        'EYE_OCCLUDED': 84,
     }
 
     QUALITY_MESSAGES = {
@@ -201,6 +205,28 @@ class PhotoPrecheckService:
             detail=fallback,
         )
 
+    def _detect_visible_eyes(self, image: Image.Image, face_box: FaceBox) -> int:
+        cv2 = self.metrics_service._cv2()
+        rgb = np.asarray(image.convert('RGB'))
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+        x0 = max(face_box.x, 0)
+        y0 = max(face_box.y, 0)
+        x1 = min(face_box.x + face_box.width, gray.shape[1])
+        y1 = min(face_box.y + face_box.height, gray.shape[0])
+        if x1 - x0 < 24 or y1 - y0 < 24:
+            return 0
+
+        face_roi = gray[y0:y1, x0:x1]
+        eye_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        eyes = eye_detector.detectMultiScale(
+            face_roi,
+            scaleFactor=1.1,
+            minNeighbors=3,
+            minSize=(max(14, face_box.width // 10), max(10, face_box.height // 12)),
+        )
+        return int(len(eyes))
+
     def _select_primary_issue(self, issues: list[PrecheckIssue]) -> PrecheckIssue | None:
         if not issues:
             return None
@@ -266,6 +292,14 @@ class PhotoPrecheckService:
                     self._append_issue(issues, 'SEVERE_POSE', '明显侧脸或偏转角度过大', FAIL)
                 elif eye_distance < 0.14:
                     self._append_issue(issues, 'SEVERE_POSE', '存在轻微姿态偏差，建议更正面', WARNING)
+
+            visible_eyes = self._detect_visible_eyes(image, face_box)
+            metrics['visible_eye_count'] = float(visible_eyes)
+            if visible_eyes == 0:
+                self._append_issue(issues, 'EYE_OCCLUDED', '双眼不可见，疑似有手部或物体遮挡', FAIL)
+                self._append_issue(issues, 'HAND_OCCLUSION', '面部遮挡严重，不建议用于正式证件照', FAIL)
+            elif visible_eyes == 1:
+                self._append_issue(issues, 'EYE_OCCLUDED', '单眼可见，存在明显遮挡风险', WARNING)
 
             jewelry_conf, jewelry_metrics = self._detect_neck_accessory(image, face_box)
             metrics.update(jewelry_metrics)

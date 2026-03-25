@@ -49,3 +49,8 @@ class DetectData(BaseModel):
     secondaryWarnings: List[str] = Field(default_factory=list)
     qualityStatus: Literal['PASS', 'WARNING', 'FAIL'] = 'PASS'
     qualityMessage: str = '照片质量良好，可直接处理'
+    processStatus: Literal['success'] = 'success'
+    processMessage: str = '图片检测流程已完成'
+    complianceStatus: Literal['passed', 'warning', 'failed'] = 'passed'
+    complianceMessage: str = '满足证件照合规要求'
+    complianceDetails: List[DetectIssue] = Field(default_factory=list)

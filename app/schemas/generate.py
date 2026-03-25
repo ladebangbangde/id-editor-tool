@@ -3,7 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from app.schemas.common import FileInfo, SizeInfo
-from app.schemas.detect import DetectData
+from app.schemas.detect import DetectData, DetectIssue
 
 
 class GenerateData(BaseModel):
@@ -33,3 +33,9 @@ class GenerateData(BaseModel):
     hdFormat: str = 'PNG'
     hdQuality: int = 100
     intermediateFiles: Optional[dict[str, FileInfo]] = None
+    processStatus: str = 'generated'
+    processMessage: str = '图片已生成'
+    complianceStatus: str = 'passed'
+    complianceMessage: str = '满足证件照合规要求'
+    complianceDetails: List[DetectIssue] = Field(default_factory=list)
+    safeToSubmit: bool = True
