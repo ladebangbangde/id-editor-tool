@@ -72,6 +72,43 @@ class FaceValidationTestCase(unittest.TestCase):
         self.assertEqual(result.primaryFaceBox, {'x': 200, 'y': 120, 'width': 280, 'height': 280})
         self.assertEqual(result.filteredOutReasons[0]['reason'], 'overlapped_duplicate')
 
+    def test_validation_returns_audit_result_structure(self):
+        self.validation_service.compliance_service.evaluate = lambda **_: {
+            'status': 'failed',
+            'code': 'FACE_OCCLUDED',
+            'message': '人脸存在明显遮挡，请露出双眼和完整面部后重试',
+            'details': [
+                {
+                    'code': 'FACE_OCCLUDED',
+                    'message': '人脸存在明显遮挡，请露出双眼和完整面部后重试',
+                }
+            ],
+            'keypointConfidences': {'leftEye': 0.2, 'rightEye': 0.1, 'noseTip': 0.1, 'mouthCorners': 0.1},
+        }
+        outcome = self.validation_service.validate(
+            self.image_shape,
+            [{'x': 240, 'y': 180, 'width': 260, 'height': 260}],
+            blur_score=0.95,
+            image_bgr=self._dummy_image(self.image_shape),
+            gray_image=self._dummy_image(self.image_shape[:2]),
+        )
+        self.assertFalse(outcome.passed)
+        self.assertEqual(outcome.auditStatus, 'failed')
+        self.assertEqual(outcome.auditCode, 'FACE_OCCLUDED')
+        self.assertGreaterEqual(len(outcome.auditDetails), 1)
+        self.assertIn('leftEye', outcome.keypointConfidences)
+
+    def test_generate_error_message_prefers_hand_or_hat_copy(self):
+        code, message = self.validation_service.build_generate_error(['HAND_OCCLUSION'])
+        self.assertEqual(code, 'HAND_OCCLUSION')
+        self.assertEqual(message, '检测到帽子或手部遮挡，不符合证件照要求')
+
+    @staticmethod
+    def _dummy_image(shape):
+        import numpy as np
+
+        return np.zeros(shape, dtype=np.uint8)
+
 
 if __name__ == '__main__':
     unittest.main()

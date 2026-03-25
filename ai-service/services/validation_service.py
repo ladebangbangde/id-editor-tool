@@ -10,17 +10,23 @@ from PIL import Image, UnidentifiedImageError
 
 from core.exceptions import (
     AppException,
+    ERROR_EYE_OCCLUDED,
     ERROR_FACE_OCCLUDED,
     ERROR_FACE_TOO_SMALL,
+    ERROR_FACIAL_KEYPOINTS_INCOMPLETE,
+    ERROR_HAND_OCCLUSION,
     ERROR_HEAD_CROPPED,
+    ERROR_HEADWEAR_DETECTED,
     ERROR_IMAGE_TOO_BLURRY,
     ERROR_IMAGE_TOO_SMALL,
     ERROR_INVALID_ARGUMENT,
     ERROR_INVALID_IMAGE,
     ERROR_MULTIPLE_FACES_DETECTED,
+    ERROR_NOT_SINGLE_FRONTAL_FACE,
     ERROR_NO_FACE_DETECTED,
     ERROR_POSE_INVALID,
 )
+from services.compliance_service import ComplianceService
 from services.face_postprocess_service import FacePostprocessService
 from services.quality_service import QualityService
 from utils.config import get_settings
@@ -64,6 +70,11 @@ class ValidationOutcome:
     rawFaceCount: int = 0
     validFaceBoxes: list[dict] = field(default_factory=list)
     filteredOutReasons: list[dict] = field(default_factory=list)
+    auditStatus: str = 'passed'
+    auditCode: str = 'VALIDATION_PASSED'
+    auditMessage: str = '审核通过'
+    auditDetails: list[dict] = field(default_factory=list)
+    keypointConfidences: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +90,13 @@ class ValidationOutcome:
             'rawFaceCount': self.rawFaceCount,
             'validFaceBoxes': self.validFaceBoxes,
             'filteredOutReasons': self.filteredOutReasons,
+            'auditResult': {
+                'status': self.auditStatus,
+                'code': self.auditCode,
+                'message': self.auditMessage,
+                'details': self.auditDetails,
+            },
+            'keypointConfidences': self.keypointConfidences,
         }
 
 
@@ -86,10 +104,15 @@ class ValidationService:
     reason_priority = [
         ERROR_NO_FACE_DETECTED,
         ERROR_MULTIPLE_FACES_DETECTED,
+        ERROR_FACE_OCCLUDED,
+        ERROR_EYE_OCCLUDED,
+        ERROR_FACIAL_KEYPOINTS_INCOMPLETE,
+        ERROR_HAND_OCCLUSION,
+        ERROR_HEADWEAR_DETECTED,
+        ERROR_NOT_SINGLE_FRONTAL_FACE,
         ERROR_IMAGE_TOO_BLURRY,
         ERROR_FACE_TOO_SMALL,
         ERROR_POSE_INVALID,
-        ERROR_FACE_OCCLUDED,
         ERROR_HEAD_CROPPED,
     ]
 
@@ -100,7 +123,12 @@ class ValidationService:
         ERROR_FACE_TOO_SMALL: '人脸区域过小，不符合证件照制作要求',
         ERROR_POSE_INVALID: '人脸姿态不符合证件照要求',
         ERROR_FACE_OCCLUDED: '人脸存在严重遮挡，不符合证件照制作要求',
+        ERROR_EYE_OCCLUDED: '人脸存在明显遮挡，请露出双眼和完整面部后重试',
+        ERROR_FACIAL_KEYPOINTS_INCOMPLETE: '当前照片不符合证件照规范，请重新拍摄',
+        ERROR_HAND_OCCLUSION: '检测到帽子或手部遮挡，不符合证件照要求',
         ERROR_HEAD_CROPPED: '头部截断过于严重，不符合证件照制作要求',
+        ERROR_NOT_SINGLE_FRONTAL_FACE: '当前照片不符合证件照规范，请使用正脸、无遮挡照片',
+        ERROR_HEADWEAR_DETECTED: '检测到帽子或头部遮挡，不符合证件照要求',
     }
 
     generate_messages = {
@@ -110,13 +138,19 @@ class ValidationService:
         ERROR_FACE_TOO_SMALL: '人脸区域过小，请上传人物主体更清晰的单人正脸照片',
         ERROR_POSE_INVALID: '人脸姿态不符合要求，请上传单人正脸照片',
         ERROR_FACE_OCCLUDED: '人脸遮挡过于严重，请上传无遮挡的单人正脸照片',
+        ERROR_EYE_OCCLUDED: '人脸存在明显遮挡，请露出双眼和完整面部后重试',
+        ERROR_FACIAL_KEYPOINTS_INCOMPLETE: '当前照片不符合证件照规范，请重新拍摄',
+        ERROR_HAND_OCCLUSION: '检测到帽子或手部遮挡，不符合证件照要求',
         ERROR_HEAD_CROPPED: '头部截断过于严重，请上传头部完整的单人正脸照片',
+        ERROR_NOT_SINGLE_FRONTAL_FACE: '当前照片不符合证件照规范，请使用正脸、无遮挡照片',
+        ERROR_HEADWEAR_DETECTED: '检测到帽子或头部遮挡，不符合证件照要求',
     }
 
     def __init__(self) -> None:
         self.settings = get_settings()
         self.quality_service = QualityService()
         self.face_postprocess_service = FacePostprocessService()
+        self.compliance_service = ComplianceService()
 
     def load_image(self, file_bytes: bytes, filename: str, content_type: str | None = None) -> LoadedImage:
         suffix = Path(filename or 'upload.jpg').suffix.lower()
@@ -187,7 +221,7 @@ class ValidationService:
         mapping = self.generate_messages if for_generate else self.detect_messages
         return mapping.get(reasons[0], '图片不符合证件照制作要求')
 
-    def validate(self, image_shape: tuple[int, ...], faces, blur_score: float) -> ValidationOutcome:
+    def validate(self, image_shape: tuple[int, ...], faces, blur_score: float, image_bgr=None, gray_image=None) -> ValidationOutcome:
         postprocess_result = self.face_postprocess_service.face_box_postprocess(faces)
         face_count = len(postprocess_result.validFaces)
         has_face = face_count > 0
@@ -209,16 +243,63 @@ class ValidationService:
                 reasons.append(ERROR_FACE_OCCLUDED)
             if primary_face_box and self.quality_service.is_head_cropped(image_shape, primary_face_box):
                 reasons.append(ERROR_HEAD_CROPPED)
+            if primary_face_box and image_bgr is not None and gray_image is not None:
+                compliance_result = self.compliance_service.evaluate(
+                    image_bgr=image_bgr,
+                    gray_image=gray_image,
+                    face_box=primary_face_box,
+                    face_count=face_count,
+                )
+                for detail in compliance_result['details']:
+                    reasons.append(detail['code'])
+            else:
+                compliance_result = {
+                    'status': 'warning',
+                    'code': 'COMPLIANCE_SKIPPED',
+                    'message': '未执行合规性审核',
+                    'details': [],
+                    'keypointConfidences': {},
+                }
 
         ordered_reasons = [reason for reason in self.reason_priority if reason in reasons]
+        non_priority = [reason for reason in reasons if reason not in ordered_reasons]
+        ordered_reasons.extend(non_priority)
         passed = not ordered_reasons
-        message = self._build_message(ordered_reasons, passed=passed, for_generate=False)
+        if passed:
+            audit_status = 'passed'
+            audit_code = 'VALIDATION_PASSED'
+            audit_message = '图片符合证件照制作要求'
+        else:
+            audit_status = 'failed'
+            audit_code = ordered_reasons[0]
+            if ordered_reasons[0] == ERROR_FACE_OCCLUDED:
+                audit_message = '人脸存在明显遮挡，请露出双眼和完整面部后重试'
+            elif ordered_reasons[0] in {ERROR_EYE_OCCLUDED, ERROR_HAND_OCCLUSION}:
+                audit_message = '检测到帽子或手部遮挡，不符合证件照要求'
+            elif ordered_reasons[0] == ERROR_FACIAL_KEYPOINTS_INCOMPLETE:
+                audit_message = '当前照片不符合证件照规范，请重新拍摄'
+            elif ordered_reasons[0] == ERROR_NOT_SINGLE_FRONTAL_FACE:
+                audit_message = '当前照片不符合证件照规范，请使用正脸、无遮挡照片'
+            else:
+                audit_message = self._build_message(ordered_reasons, passed=passed, for_generate=False)
+        compliance_details = compliance_result['details'] if 'compliance_result' in locals() else []
+        compliance_codes = {item['code'] for item in compliance_details}
+        audit_details = list(compliance_details)
+        for reason in ordered_reasons:
+            if reason in compliance_codes:
+                continue
+            audit_details.append(
+                {
+                    'code': reason,
+                    'message': self.detect_messages.get(reason, '图片不符合证件照制作要求'),
+                }
+            )
         return ValidationOutcome(
             hasFace=has_face,
             faceCount=face_count,
             passed=passed,
             reasons=ordered_reasons,
-            message=message,
+            message=audit_message,
             blurScore=blur_score,
             imageWidth=image_shape[1],
             imageHeight=image_shape[0],
@@ -226,9 +307,25 @@ class ValidationService:
             rawFaceCount=postprocess_result.rawFaceCount,
             validFaceBoxes=postprocess_result.validFaces,
             filteredOutReasons=postprocess_result.filteredOutReasons,
+            auditStatus=audit_status,
+            auditCode=audit_code,
+            auditMessage=audit_message,
+            auditDetails=audit_details,
+            keypointConfidences=compliance_result['keypointConfidences'] if 'compliance_result' in locals() else {},
         )
 
     def build_generate_error(self, reasons: list[str]) -> tuple[str, str]:
         ordered_reasons = [reason for reason in self.reason_priority if reason in reasons]
+        ordered_reasons.extend([reason for reason in reasons if reason not in ordered_reasons])
         error_code = ordered_reasons[0] if ordered_reasons else ERROR_NO_FACE_DETECTED
+        if error_code == ERROR_FACE_OCCLUDED:
+            return error_code, '人脸存在明显遮挡，请露出双眼和完整面部后重试'
+        if error_code in {ERROR_EYE_OCCLUDED, ERROR_HAND_OCCLUSION}:
+            return error_code, '检测到帽子或手部遮挡，不符合证件照要求'
+        if error_code == ERROR_FACIAL_KEYPOINTS_INCOMPLETE:
+            return error_code, '当前照片不符合证件照规范，请重新拍摄'
+        if error_code == ERROR_HEADWEAR_DETECTED:
+            return error_code, '检测到帽子或手部遮挡，不符合证件照要求'
+        if error_code == ERROR_NOT_SINGLE_FRONTAL_FACE:
+            return error_code, '当前照片不符合证件照规范，请使用正脸、无遮挡照片'
         return error_code, self._build_message(ordered_reasons, passed=False, for_generate=True)

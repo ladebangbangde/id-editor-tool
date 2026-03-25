@@ -86,14 +86,3 @@ class HandOcclusionError(AppError):
 class BadLightingError(AppError):
     def __init__(self, message: str = 'Lighting is unsuitable for ID photo generation', details: Any = None):
         super().__init__('BAD_LIGHTING', message, 422, details)
-
-
-
-class ImageTooBlurryError(AppError):
-    def __init__(self, message: str = 'Image is too blurry for formal wear generation', details: Any = None):
-        super().__init__('IMAGE_TOO_BLURRY', message, 422, details)
-
-
-class ShoulderNeckIncompleteError(AppError):
-    def __init__(self, message: str = 'Shoulder and neck area is incomplete for formal wear generation', details: Any = None):
-        super().__init__('SHOULDER_NECK_INCOMPLETE', message, 422, details)

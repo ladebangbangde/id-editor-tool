@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 import cv2
 
 from core.exceptions import ERROR_FACE_OCCLUDED, ERROR_POSE_INVALID
+from constants.status import QUALITY_STATUS_FAILED, QUALITY_STATUS_WARNING
 from services.quality_service import QualityService
 from services.validation_service import LoadedImage, ValidationOutcome, ValidationService
 
@@ -27,8 +28,13 @@ class DetectOutcome:
     imageMode: str
     validationPassed: bool
     reasons: list[str]
+    status: str
+    code: str
+    details: list[dict]
     suggestion: str
     message: str
+    auditResult: dict
+    keypointConfidences: dict[str, float]
     primaryFaceBox: dict | None = None
 
     @property
@@ -94,6 +100,8 @@ class DetectService:
             image_shape=image_bgr.shape,
             faces=normalized_faces,
             blur_score=blur_score,
+            image_bgr=image_bgr,
+            gray_image=gray,
         )
         quality_details = self.quality_service.evaluate_details(loaded_image.image)
 
@@ -103,6 +111,34 @@ class DetectService:
             message = validation_result.message
         else:
             message = '未检测到稳定可处理人像，请上传单人正脸照片'
+        audit_result = {
+            'status': validation_result.auditStatus,
+            'code': validation_result.auditCode,
+            'message': validation_result.auditMessage,
+            'details': validation_result.auditDetails,
+        }
+        if validation_result.passed and quality_details['qualityStatus'] != 'passed':
+            audit_result = {
+                'status': 'warning',
+                'code': 'QUALITY_WARNING',
+                'message': quality_details['qualityMessage'],
+                'details': validation_result.auditDetails
+                + [
+                    {
+                        'code': 'QUALITY_WARNING',
+                        'message': quality_details['qualityMessage'],
+                    }
+                ],
+            }
+
+        final_quality_status = quality_details['qualityStatus']
+        final_quality_message = quality_details['qualityMessage']
+        if audit_result['status'] == 'failed':
+            final_quality_status = QUALITY_STATUS_FAILED
+            final_quality_message = audit_result['message']
+        elif audit_result['status'] == 'warning' and final_quality_status == 'passed':
+            final_quality_status = QUALITY_STATUS_WARNING
+            final_quality_message = audit_result['message']
 
         return DetectOutcome(
             imageId=image_id,
@@ -113,16 +149,21 @@ class DetectService:
             poseValid=ERROR_POSE_INVALID not in validation_result.reasons,
             occlusionDetected=ERROR_FACE_OCCLUDED in validation_result.reasons,
             isProcessable=validation_result.passed,
-            qualityStatus=quality_details['qualityStatus'],
-            qualityMessage=quality_details['qualityMessage'],
+            qualityStatus=final_quality_status,
+            qualityMessage=final_quality_message,
             imageWidth=loaded_image.width,
             imageHeight=loaded_image.height,
             imageFormat=loaded_image.format,
             imageMode=loaded_image.mode,
             validationPassed=validation_result.passed,
             reasons=validation_result.reasons,
+            status=audit_result['status'],
+            code=audit_result['code'],
+            details=audit_result['details'],
             suggestion=self._build_suggestion(validation_result, quality_details),
             message=message,
+            auditResult=audit_result,
+            keypointConfidences=validation_result.keypointConfidences,
             primaryFaceBox=validation_result.primaryFaceBox,
         )
 
