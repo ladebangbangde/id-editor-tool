@@ -91,7 +91,7 @@ def test_tongue_out_expression_is_warned():
     result = svc.precheck(img)
 
     assert result.status == 'WARNING'
-    assert 'EXAGGERATED_EXPRESSION' in result.warning_codes
+    assert 'TONGUE_OUT' in result.warning_codes
 
 
 def test_natural_closed_mouth_expression_is_passed():
@@ -119,8 +119,9 @@ def test_natural_closed_mouth_expression_is_passed():
     result = svc.precheck(img)
 
     assert result.status == 'PASS'
-    assert 'EXAGGERATED_EXPRESSION' not in result.warning_codes
-    assert 'EXAGGERATED_EXPRESSION' not in result.reason_codes
+    assert 'TONGUE_OUT' not in result.warning_codes
+    assert 'MOUTH_OPEN' not in result.reason_codes
+    assert 'SMILE_TOO_BROAD' not in result.warning_codes
 
 
 def test_obvious_mouth_open_expression_is_failed():
@@ -148,4 +149,4 @@ def test_obvious_mouth_open_expression_is_failed():
     result = svc.precheck(img)
 
     assert result.status == FAIL
-    assert 'EXAGGERATED_EXPRESSION' in result.reason_codes
+    assert 'MOUTH_OPEN' in result.reason_codes
