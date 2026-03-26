@@ -65,6 +65,10 @@ class PhotoPrecheckService:
         'EYE_OCCLUDED': '眼部遮挡明显',
         'HAND_OCCLUSION': '手部遮挡面部',
         'EXAGGERATED_EXPRESSION': '表情不规范',
+        'TONGUE_OUT': '检测到吐舌',
+        'MOUTH_OPEN': '检测到明显张嘴',
+        'SMILE_TOO_BROAD': '笑容幅度过大',
+        'MOUTH_ASYMMETRY': '嘴部明显歪斜',
     }
 
     ISSUE_PRIORITY = {
@@ -72,6 +76,10 @@ class PhotoPrecheckService:
         'MULTIPLE_FACES_DETECTED': 94,
         'HAND_OCCLUSION': 93,
         'EYE_OCCLUDED': 92,
+        'TONGUE_OUT': 91,
+        'MOUTH_OPEN': 90,
+        'SMILE_TOO_BROAD': 89,
+        'MOUTH_ASYMMETRY': 88,
         'EXAGGERATED_EXPRESSION': 91,
         'SEVERE_POSE': 80,
         'HEAD_SHOULDER_INCOMPLETE': 78,
@@ -98,6 +106,10 @@ class PhotoPrecheckService:
     MOUTH_CORNER_RISE_FAIL_THRESHOLD = 0.095  # 夸张咧嘴/上扬失败阈值
     MOUTH_ASYMMETRY_WARN_THRESHOLD = 0.080  # 轻微歪嘴提醒阈值
     MOUTH_ASYMMETRY_FAIL_THRESHOLD = 0.145  # 明显歪嘴失败阈值
+    TONGUE_OUT_SCORE_FAIL_THRESHOLD = 0.70
+    TONGUE_OUT_SCORE_WARN_THRESHOLD = 0.48
+    EXPRESSION_NOT_NEUTRAL_FAIL_THRESHOLD = 0.70
+    EXPRESSION_NOT_NEUTRAL_WARN_THRESHOLD = 0.45
 
     QUALITY_MESSAGES = {
         PASS: '照片质量良好，可直接进入处理流程',
@@ -386,6 +398,7 @@ class PhotoPrecheckService:
         mouth_width = float(np.linalg.norm(np.array(mouth_left) - np.array(mouth_right)))
         mouth_open = float(np.linalg.norm(np.array(upper_lip) - np.array(lower_lip)))
         mouth_open_ratio = mouth_open / max(mouth_width, 1.0)
+        mouth_vertical_gap = mouth_open / max(face_box.height, 1.0)
         corner_center_y = (mouth_left[1] + mouth_right[1]) / 2.0
         mouth_corner_rise = (upper_outer[1] - corner_center_y) / max(mouth_width, 1.0)
         mouth_asymmetry = abs(mouth_left[1] - mouth_right[1]) / max(mouth_width, 1.0)
@@ -410,14 +423,36 @@ class PhotoPrecheckService:
             tongue_mask = red_dominant & warm_balance
             tongue_ratio = float(np.count_nonzero(tongue_mask) / max(tongue_mask.size, 1))
 
+        tongue_out_score = min(
+            1.0,
+            0.60 * (tongue_ratio / max(self.TONGUE_PIXEL_RATIO_FAIL_THRESHOLD, 1e-6))
+            + 0.30 * (mouth_open_ratio / max(self.MOUTH_OPEN_RATIO_WARN_THRESHOLD, 1e-6))
+            + 0.10 * (mouth_vertical_gap / 0.08),
+        )
+        expression_not_neutral_score = min(
+            1.0,
+            0.45 * (mouth_open_ratio / max(self.MOUTH_OPEN_RATIO_WARN_THRESHOLD, 1e-6))
+            + 0.30 * (max(mouth_corner_rise, 0.0) / max(self.MOUTH_CORNER_RISE_FAIL_THRESHOLD, 1e-6))
+            + 0.25 * (mouth_asymmetry / max(self.MOUTH_ASYMMETRY_FAIL_THRESHOLD, 1e-6)),
+        )
+
         metrics = {
+            'mouth_aspect_ratio': mouth_open_ratio,
             'mouth_open_ratio': mouth_open_ratio,
+            'mouth_vertical_gap': mouth_vertical_gap,
+            'mouth_width': mouth_width,
             'tongue_pixel_ratio': tongue_ratio,
             'mouth_corner_rise': float(mouth_corner_rise),
             'mouth_asymmetry': float(mouth_asymmetry),
+            'tongue_out_score': float(tongue_out_score),
+            'expression_not_neutral_score': float(expression_not_neutral_score),
         }
 
-        if tongue_ratio >= self.TONGUE_PIXEL_RATIO_FAIL_THRESHOLD:
+        if (
+            tongue_ratio >= self.TONGUE_PIXEL_RATIO_FAIL_THRESHOLD
+            and mouth_open_ratio >= 0.14
+            and tongue_out_score >= self.TONGUE_OUT_SCORE_FAIL_THRESHOLD
+        ):
             return 'tongue_out_fail', metrics
         if mouth_open_ratio >= self.MOUTH_OPEN_RATIO_FAIL_THRESHOLD:
             return 'mouth_open_fail', metrics
@@ -427,13 +462,20 @@ class PhotoPrecheckService:
         ) or mouth_asymmetry >= self.MOUTH_ASYMMETRY_FAIL_THRESHOLD:
             return 'exaggerated_fail', metrics
 
-        if tongue_ratio >= self.TONGUE_PIXEL_RATIO_WARN_THRESHOLD:
+        if (
+            tongue_ratio >= self.TONGUE_PIXEL_RATIO_WARN_THRESHOLD
+            and tongue_out_score >= self.TONGUE_OUT_SCORE_WARN_THRESHOLD
+        ):
             return 'tongue_out_warn', metrics
         if mouth_open_ratio >= self.MOUTH_OPEN_RATIO_WARN_THRESHOLD:
             return 'mouth_open_warn', metrics
         if mouth_asymmetry >= self.MOUTH_ASYMMETRY_WARN_THRESHOLD:
             return 'expression_warn', metrics
-        if mouth_corner_rise >= self.MOUTH_CORNER_RISE_WARN_THRESHOLD and mouth_open_ratio >= 0.12:
+        if (
+            mouth_corner_rise >= self.MOUTH_CORNER_RISE_WARN_THRESHOLD
+            and mouth_open_ratio >= 0.15
+            and expression_not_neutral_score >= self.EXPRESSION_NOT_NEUTRAL_WARN_THRESHOLD
+        ):
             return 'expression_warn', metrics
         return 'neutral', metrics
 
@@ -528,10 +570,24 @@ class PhotoPrecheckService:
 
             expression_state, expression_metrics = self._detect_expression_via_mesh(image, face_box)
             metrics.update(expression_metrics)
-            if expression_state in {'tongue_out_fail', 'mouth_open_fail', 'exaggerated_fail'}:
-                self._append_issue(issues, 'EXAGGERATED_EXPRESSION', '检测到明显张嘴/吐舌或夸张表情，不符合证件照规范，请自然闭口重拍', FAIL)
-            elif expression_state in {'tongue_out_warn', 'mouth_open_warn', 'expression_warn'}:
-                self._append_issue(issues, 'EXAGGERATED_EXPRESSION', '表情略不够自然，建议闭口并减少夸张嘴部动作后重拍', WARNING)
+            if expression_state == 'tongue_out_fail':
+                self._append_issue(issues, 'TONGUE_OUT', '检测到明显吐舌，不符合证件照规范，请自然闭口重拍', FAIL)
+            elif expression_state == 'mouth_open_fail':
+                self._append_issue(issues, 'MOUTH_OPEN', '检测到明显张嘴或露齿，不符合证件照规范，请闭口重拍', FAIL)
+            elif expression_state == 'exaggerated_fail':
+                if expression_metrics.get('mouth_asymmetry', 0.0) >= self.MOUTH_ASYMMETRY_FAIL_THRESHOLD:
+                    self._append_issue(issues, 'MOUTH_ASYMMETRY', '检测到嘴部明显歪斜，建议保持面部自然对称后重拍', FAIL)
+                else:
+                    self._append_issue(issues, 'SMILE_TOO_BROAD', '检测到明显夸张表情，不符合证件照规范，请保持自然中性表情重拍', FAIL)
+            elif expression_state == 'tongue_out_warn':
+                self._append_issue(issues, 'TONGUE_OUT', '检测到疑似吐舌趋势，建议闭口自然表情后重拍', WARNING)
+            elif expression_state == 'mouth_open_warn':
+                self._append_issue(issues, 'MOUTH_OPEN', '嘴部开合偏大，建议闭口拍摄以降低审核风险', WARNING)
+            elif expression_state == 'expression_warn':
+                if expression_metrics.get('mouth_asymmetry', 0.0) >= self.MOUTH_ASYMMETRY_WARN_THRESHOLD:
+                    self._append_issue(issues, 'MOUTH_ASYMMETRY', '嘴部轻微不对称，建议放松后保持正面重拍', WARNING)
+                else:
+                    self._append_issue(issues, 'SMILE_TOO_BROAD', '笑意稍明显，建议表情更中性以提升证件照通过率', WARNING)
 
             jewelry_conf, jewelry_metrics = self._detect_neck_accessory(image, face_box)
             metrics.update(jewelry_metrics)
