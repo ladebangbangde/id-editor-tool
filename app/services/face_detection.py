@@ -70,6 +70,10 @@ class FaceDetectionService:
         'EYE_OCCLUDED': ['请保持双眼自然睁开并直视镜头，避免眨眼/单眼闭合'],
         'HAND_OCCLUSION': ['请移开手势，确保面部五官无遮挡后再拍摄'],
         'EXAGGERATED_EXPRESSION': ['请保持自然表情并闭口，不要吐舌或做夸张表情'],
+        'TONGUE_OUT': ['请闭口并收回舌头后重拍'],
+        'MOUTH_OPEN': ['请保持自然闭口，避免露齿或发音状态'],
+        'SMILE_TOO_BROAD': ['请减弱笑容幅度，保持自然中性表情'],
+        'MOUTH_ASYMMETRY': ['请放松嘴部并保持面部对称后重拍'],
     }
 
     def __init__(self) -> None:
