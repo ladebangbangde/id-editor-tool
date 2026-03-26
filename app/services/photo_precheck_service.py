@@ -64,6 +64,7 @@ class PhotoPrecheckService:
         'EXTREME_LIGHTING': '光照异常严重',
         'EYE_OCCLUDED': '眼部遮挡明显',
         'HAND_OCCLUSION': '手部遮挡面部',
+        'EXAGGERATED_EXPRESSION': '表情不规范',
     }
 
     ISSUE_PRIORITY = {
@@ -71,6 +72,7 @@ class PhotoPrecheckService:
         'MULTIPLE_FACES_DETECTED': 94,
         'HAND_OCCLUSION': 93,
         'EYE_OCCLUDED': 92,
+        'EXAGGERATED_EXPRESSION': 91,
         'SEVERE_POSE': 80,
         'HEAD_SHOULDER_INCOMPLETE': 78,
         'FACE_RATIO_INVALID': 76,
@@ -88,6 +90,14 @@ class PhotoPrecheckService:
     EYE_ASYMMETRY_WARN_THRESHOLD = 0.08  # 开眼不对称告警：建议范围 0.06~0.12
     HAND_FACE_OVERLAP_FAIL_THRESHOLD = 0.015  # 手部遮挡面部面积占比失败阈值
     HAND_FACE_OVERLAP_WARN_THRESHOLD = 0.006  # 手部遮挡面部面积占比告警阈值
+    MOUTH_OPEN_RATIO_FAIL_THRESHOLD = 0.34  # 明显张嘴（发音/大笑）失败阈值
+    MOUTH_OPEN_RATIO_WARN_THRESHOLD = 0.24  # 张口偏大提醒阈值（不直接判鬼脸）
+    TONGUE_PIXEL_RATIO_FAIL_THRESHOLD = 0.115  # 口腔区域舌头特征显著占比失败阈值
+    TONGUE_PIXEL_RATIO_WARN_THRESHOLD = 0.070  # 口腔区域疑似舌头占比提醒阈值
+    MOUTH_CORNER_RISE_WARN_THRESHOLD = 0.045  # 自然微笑以上时提醒
+    MOUTH_CORNER_RISE_FAIL_THRESHOLD = 0.095  # 夸张咧嘴/上扬失败阈值
+    MOUTH_ASYMMETRY_WARN_THRESHOLD = 0.080  # 轻微歪嘴提醒阈值
+    MOUTH_ASYMMETRY_FAIL_THRESHOLD = 0.145  # 明显歪嘴失败阈值
 
     QUALITY_MESSAGES = {
         PASS: '照片质量良好，可直接进入处理流程',
@@ -358,6 +368,75 @@ class PhotoPrecheckService:
             return 'warn', overlap_ratio
         return 'clear', overlap_ratio
 
+    def _detect_expression_via_mesh(self, image: Image.Image, face_box: FaceBox) -> tuple[str, dict[str, float]]:
+        rgb = np.asarray(image.convert('RGB'))
+        h, w = rgb.shape[:2]
+        detector = self._face_mesh_detector()
+        result = detector.process(rgb)
+        if not result.multi_face_landmarks:
+            return 'unknown', {}
+
+        face_landmarks = result.multi_face_landmarks[0]
+        upper_lip = self._landmark_point(face_landmarks, 13, w, h)
+        lower_lip = self._landmark_point(face_landmarks, 14, w, h)
+        mouth_left = self._landmark_point(face_landmarks, 61, w, h)
+        mouth_right = self._landmark_point(face_landmarks, 291, w, h)
+        upper_outer = self._landmark_point(face_landmarks, 0, w, h)
+
+        mouth_width = float(np.linalg.norm(np.array(mouth_left) - np.array(mouth_right)))
+        mouth_open = float(np.linalg.norm(np.array(upper_lip) - np.array(lower_lip)))
+        mouth_open_ratio = mouth_open / max(mouth_width, 1.0)
+        corner_center_y = (mouth_left[1] + mouth_right[1]) / 2.0
+        mouth_corner_rise = (upper_outer[1] - corner_center_y) / max(mouth_width, 1.0)
+        mouth_asymmetry = abs(mouth_left[1] - mouth_right[1]) / max(mouth_width, 1.0)
+
+        center_x = int((mouth_left[0] + mouth_right[0]) / 2.0)
+        center_y = int((upper_lip[1] + lower_lip[1]) / 2.0)
+        roi_half_w = int(max(4, mouth_width * 0.26))
+        roi_h = int(max(6, mouth_width * 0.38))
+        x0 = max(0, center_x - roi_half_w)
+        x1 = min(w, center_x + roi_half_w)
+        y0 = max(0, center_y)
+        y1 = min(h, center_y + roi_h)
+
+        tongue_ratio = 0.0
+        if x1 - x0 >= 4 and y1 - y0 >= 4:
+            mouth_roi = rgb[y0:y1, x0:x1]
+            r = mouth_roi[:, :, 0].astype(np.float32)
+            g = mouth_roi[:, :, 1].astype(np.float32)
+            b = mouth_roi[:, :, 2].astype(np.float32)
+            red_dominant = (r > 95.0) & (r - np.maximum(g, b) > 12.0)
+            warm_balance = (g > 45.0) & (b > 35.0)
+            tongue_mask = red_dominant & warm_balance
+            tongue_ratio = float(np.count_nonzero(tongue_mask) / max(tongue_mask.size, 1))
+
+        metrics = {
+            'mouth_open_ratio': mouth_open_ratio,
+            'tongue_pixel_ratio': tongue_ratio,
+            'mouth_corner_rise': float(mouth_corner_rise),
+            'mouth_asymmetry': float(mouth_asymmetry),
+        }
+
+        if tongue_ratio >= self.TONGUE_PIXEL_RATIO_FAIL_THRESHOLD:
+            return 'tongue_out_fail', metrics
+        if mouth_open_ratio >= self.MOUTH_OPEN_RATIO_FAIL_THRESHOLD:
+            return 'mouth_open_fail', metrics
+        if (
+            mouth_corner_rise >= self.MOUTH_CORNER_RISE_FAIL_THRESHOLD
+            and mouth_open_ratio >= self.MOUTH_OPEN_RATIO_WARN_THRESHOLD
+        ) or mouth_asymmetry >= self.MOUTH_ASYMMETRY_FAIL_THRESHOLD:
+            return 'exaggerated_fail', metrics
+
+        if tongue_ratio >= self.TONGUE_PIXEL_RATIO_WARN_THRESHOLD:
+            return 'tongue_out_warn', metrics
+        if mouth_open_ratio >= self.MOUTH_OPEN_RATIO_WARN_THRESHOLD:
+            return 'mouth_open_warn', metrics
+        if mouth_asymmetry >= self.MOUTH_ASYMMETRY_WARN_THRESHOLD:
+            return 'expression_warn', metrics
+        if mouth_corner_rise >= self.MOUTH_CORNER_RISE_WARN_THRESHOLD and mouth_open_ratio >= 0.12:
+            return 'expression_warn', metrics
+        return 'neutral', metrics
+
     def _select_primary_issue(self, issues: list[PrecheckIssue]) -> PrecheckIssue | None:
         if not issues:
             return None
@@ -446,6 +525,13 @@ class PhotoPrecheckService:
                 self._append_issue(issues, 'HAND_OCCLUSION', '检测到手势遮挡面部关键区域，不建议用于正式证件照', FAIL)
             elif hand_state == 'warn':
                 self._append_issue(issues, 'HAND_OCCLUSION', '检测到手部接近面部，可能影响证件照审核', WARNING)
+
+            expression_state, expression_metrics = self._detect_expression_via_mesh(image, face_box)
+            metrics.update(expression_metrics)
+            if expression_state in {'tongue_out_fail', 'mouth_open_fail', 'exaggerated_fail'}:
+                self._append_issue(issues, 'EXAGGERATED_EXPRESSION', '检测到明显张嘴/吐舌或夸张表情，不符合证件照规范，请自然闭口重拍', FAIL)
+            elif expression_state in {'tongue_out_warn', 'mouth_open_warn', 'expression_warn'}:
+                self._append_issue(issues, 'EXAGGERATED_EXPRESSION', '表情略不够自然，建议闭口并减少夸张嘴部动作后重拍', WARNING)
 
             jewelry_conf, jewelry_metrics = self._detect_neck_accessory(image, face_box)
             metrics.update(jewelry_metrics)

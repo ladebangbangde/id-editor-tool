@@ -3,6 +3,7 @@ import pytest
 
 from app.core.exceptions import EyeOccludedError
 from app.services.face_detection import DetectionIssue, DetectionReason, FaceDetectionResult, FAILED, WARNING
+from app.services.output_quality_service import OutputQualityResult
 from app.services.photo_processor import PhotoProcessor
 
 
@@ -112,6 +113,14 @@ def test_generate_returns_dual_status_for_warning_result(processor: PhotoProcess
     processor.cropper.crop = lambda rgba, spec, primary_face: rgba
     processor.background.apply = lambda cropped_rgba, background_color: Image.new('RGB', (413, 579), 'white')
     processor.enhancer.enhance = lambda img: img
+    processor.output_quality.evaluate = lambda **kwargs: OutputQualityResult(
+        status='PASS',
+        reason_codes=[],
+        warnings=[],
+        primary_issue=None,
+        primary_message='输出成片质量正常',
+        metrics={},
+    )
 
     payload = processor.generate(
         image=image,
@@ -127,3 +136,38 @@ def test_generate_returns_dual_status_for_warning_result(processor: PhotoProcess
     assert payload.qualityStatus == 'WARNING'
     assert '不建议直接用于正式证件照提交' in payload.complianceMessage
     assert '不建议直接用于正式证件照提交' in payload.qualityMessage
+
+
+def test_generate_marks_final_fail_when_output_quality_fails(processor: PhotoProcessor) -> None:
+    image = Image.new('RGB', (800, 1000), 'white')
+    processor.detector.detect = lambda _image: build_result(
+        status='PASS',
+        can_generate=True,
+        recommended=True,
+    )
+    processor.segmenter.remove_background = lambda _image: image.convert('RGBA')
+    processor.cropper.crop = lambda rgba, spec, primary_face: rgba
+    processor.background.apply = lambda cropped_rgba, background_color: Image.new('RGB', (413, 579), 'white')
+    processor.enhancer.enhance = lambda img: img
+    processor.output_quality.evaluate = lambda **kwargs: OutputQualityResult(
+        status='FAIL',
+        reason_codes=['FACE_COLOR_POLLUTION'],
+        warnings=[],
+        primary_issue='FACE_COLOR_POLLUTION',
+        primary_message='脸部检测到明显底色串色，请更换干净背景重试',
+        metrics={'face_color_pollution': 48.0},
+    )
+
+    payload = processor.generate(
+        image=image,
+        size_key='one_inch',
+        background_color='red',
+        enhance=False,
+        save_output=False,
+    )
+
+    assert payload.qualityStatus == 'FAIL'
+    assert payload.safeToSubmit is False
+    assert payload.outputQualityStatus == 'FAIL'
+    assert payload.outputReasonCodes == ['FACE_COLOR_POLLUTION']
+    assert payload.allowHdSave is False
