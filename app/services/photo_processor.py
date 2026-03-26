@@ -244,6 +244,8 @@ class PhotoProcessor:
             save_image(refined.alpha, self.storage.temp_path(task_id, 'refined_alpha.png'))
             save_image(refined.trimap, self.storage.temp_path(task_id, 'trimap.png'))
             save_image(refined_rgba, self.storage.temp_path(task_id, 'refined_foreground.png'))
+            if refined.guided_alpha is not None:
+                save_image(refined.guided_alpha, self.storage.temp_path(task_id, 'guided_alpha.png'))
             if refined.edge_band_mask is not None:
                 save_image(refined.edge_band_mask, self.storage.temp_path(task_id, 'edge_band_mask.png'))
             if decontaminated_refined_rgba is not None:
@@ -270,7 +272,10 @@ class PhotoProcessor:
         hd_image = hd_image_legacy
         hd_image_decontaminated = None
         if cropped_decontaminated_rgba is not None:
-            hd_image_decontaminated = self.background.apply_edge_aware(cropped_decontaminated_rgba, background_color)
+            if self.settings.enable_guided_edge_refinement:
+                hd_image_decontaminated = self.background.apply_edge_aware(cropped_decontaminated_rgba, background_color)
+            else:
+                hd_image_decontaminated = self.background.apply(cropped_decontaminated_rgba, background_color)
             if use_decontaminated_output:
                 hd_image = hd_image_decontaminated
         logger.info('Background applied')
@@ -310,6 +315,7 @@ class PhotoProcessor:
                 'trimap.png',
                 'refined_foreground.png',
                 'foreground_decontaminated.png',
+                'guided_alpha.png',
                 'edge_band_mask.png',
                 'cropped_rgba.png',
                 'cropped_rgba_legacy.png',

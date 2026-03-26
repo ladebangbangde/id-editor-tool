@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 from skimage import filters, measure, morphology
 
+from app.core.config import get_settings
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,6 +19,7 @@ class MatteRefineResult:
     trimap: Image.Image
     decontaminated_rgba: Image.Image | None = None
     edge_band_mask: Image.Image | None = None
+    guided_alpha: Image.Image | None = None
 
 
 class MatteRefineService:
@@ -33,6 +35,9 @@ class MatteRefineService:
     UNKNOWN_TRIMAP_MIN = 0.08
     UNKNOWN_TRIMAP_MAX = 0.92
     EDGE_DECONTAMINATION_STRENGTH = 0.62
+
+    def __init__(self) -> None:
+        self.settings = get_settings()
 
     def _cv2(self):
         try:
@@ -51,6 +56,33 @@ class MatteRefineService:
             logger.warning('pymatting unavailable/fail, fallback to original alpha: %s', exc)
             # 回退时 unknown 区域使用 trimap 中值，保证流程稳定。
             return np.where(trimap >= 0.99, 1.0, np.where(trimap <= 0.01, 0.0, 0.5)).astype(np.float32)
+
+    def _estimate_foreground_ml(self, source_rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray | None:
+        try:
+            from pymatting import estimate_foreground_ml
+
+            foreground = estimate_foreground_ml(source_rgb, alpha)
+            return np.clip(foreground.astype(np.float32), 0.0, 1.0)
+        except Exception as exc:
+            logger.warning('pymatting foreground estimate unavailable/fail: %s', exc)
+            return None
+
+    def _guided_refine_alpha(self, source_rgb: np.ndarray, alpha_refined: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+        if not self.settings.enable_guided_edge_refinement:
+            return alpha_refined, None
+        cv2 = self._cv2()
+        if cv2 is None or not hasattr(cv2, 'ximgproc'):
+            logger.warning('guided edge refinement skipped: cv2.ximgproc unavailable')
+            return alpha_refined, None
+        try:
+            guide = (source_rgb * 255.0).clip(0, 255).astype(np.uint8)
+            src = np.clip(alpha_refined.astype(np.float32), 0.0, 1.0)
+            refined = cv2.ximgproc.guidedFilter(guide=guide, src=src, radius=8, eps=1e-3)
+            refined = np.clip(refined.astype(np.float32), 0.0, 1.0)
+            return refined, refined
+        except Exception as exc:
+            logger.warning('guided edge refinement failed, fallback to alpha_refined: %s', exc)
+            return alpha_refined, None
 
     def _build_trimap(self, alpha_u8: np.ndarray) -> np.ndarray:
         alpha = alpha_u8.astype(np.float32) / 255.0
@@ -102,6 +134,9 @@ class MatteRefineService:
         safe_alpha = np.clip(alpha, 0.20, 0.98)
         estimated_fg = (fg_rgb - (1.0 - alpha)[..., None] * source_rgb) / safe_alpha[..., None]
         estimated_fg = np.clip(estimated_fg, 0.0, 1.0)
+        pymatting_fg = self._estimate_foreground_ml(source_rgb=source_rgb, alpha=alpha)
+        if pymatting_fg is not None:
+            estimated_fg = np.clip(estimated_fg * 0.25 + pymatting_fg * 0.75, 0.0, 1.0)
         blend_strength = (edge * (1.0 - alpha) * self.EDGE_DECONTAMINATION_STRENGTH)[..., None]
         decontaminated = fg_rgb * (1.0 - blend_strength) + estimated_fg * blend_strength
         decontaminated = np.clip(decontaminated, 0.0, 1.0)
@@ -120,21 +155,29 @@ class MatteRefineService:
         trimap = self._build_trimap(alpha_u8)
         alpha_refined = self._estimate_alpha_cf(rgb, trimap)
         alpha_refined = self._postprocess_alpha(alpha_refined)
+        alpha_refined, guided_alpha_debug = self._guided_refine_alpha(source_rgb=rgb, alpha_refined=alpha_refined)
 
         refined_rgba = fg_rgba_np.copy()
         refined_rgba[:, :, 3] = (alpha_refined * 255.0).clip(0, 255).astype(np.uint8)
         edge_band_mask = self._build_edge_band_mask(alpha_u8=alpha_u8, trimap=trimap)
-        decontaminated_rgba = self._decontaminate_foreground_rgb(
-            source_rgb=rgb,
-            fg_rgba=refined_rgba,
-            alpha_refined=alpha_refined,
-            edge_band_mask=edge_band_mask,
-        )
+        decontaminated_rgba = None
+        if self.settings.enable_foreground_decontamination:
+            decontaminated_rgba = self._decontaminate_foreground_rgb(
+                source_rgb=rgb,
+                fg_rgba=refined_rgba,
+                alpha_refined=alpha_refined,
+                edge_band_mask=edge_band_mask,
+            )
 
         return MatteRefineResult(
             rgba=Image.fromarray(refined_rgba, mode='RGBA'),
             alpha=Image.fromarray(refined_rgba[:, :, 3], mode='L'),
             trimap=Image.fromarray((trimap * 255.0).clip(0, 255).astype(np.uint8), mode='L'),
-            decontaminated_rgba=Image.fromarray(decontaminated_rgba, mode='RGBA'),
+            decontaminated_rgba=Image.fromarray(decontaminated_rgba, mode='RGBA') if decontaminated_rgba is not None else None,
             edge_band_mask=Image.fromarray((edge_band_mask * 255.0).astype(np.uint8), mode='L'),
+            guided_alpha=(
+                Image.fromarray((guided_alpha_debug * 255.0).clip(0, 255).astype(np.uint8), mode='L')
+                if guided_alpha_debug is not None
+                else None
+            ),
         )
