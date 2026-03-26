@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+from PIL import Image
+from skimage.measure import perimeter
+from skimage.color import rgb2hsv
+from skimage.measure import find_contours
+
+from app.services.photo_precheck_service import FAIL, PASS, WARNING
+
+
+@dataclass
+class OutputQualityResult:
+    status: str
+    reason_codes: list[str]
+    warnings: list[str]
+    primary_issue: str | None = None
+    primary_message: str | None = None
+    metrics: dict[str, float] = field(default_factory=dict)
+
+
+class OutputQualityService:
+    FACE_POLLUTION_FAIL = 0.22
+    FACE_POLLUTION_WARN = 0.14
+    SKIN_RED_BLUE_CAST_FAIL = 40.0
+    SKIN_RED_BLUE_CAST_WARN = 28.0
+    SKIN_SAT_FAIL = 0.58
+    SKIN_SAT_WARN = 0.48
+    EDGE_NOISE_FAIL = 0.31
+    EDGE_NOISE_WARN = 0.21
+    FEATURE_POLLUTION_FAIL = 0.18
+    FEATURE_POLLUTION_WARN = 0.10
+
+    ISSUE_PRIORITY = {
+        'FACE_COLOR_POLLUTION': 100,
+        'FACIAL_FEATURE_CORRUPTED': 95,
+        'SKIN_TONE_ABNORMAL': 90,
+        'FOREGROUND_EDGE_BROKEN': 85,
+    }
+
+    ISSUE_MESSAGES = {
+        'FACE_COLOR_POLLUTION': '脸部检测到明显底色串色，请更换干净背景重试',
+        'SKIN_TONE_ABNORMAL': '脸部肤色偏差较大，建议更换光线更均匀的照片',
+        'FOREGROUND_EDGE_BROKEN': '人物边界质量异常，头发或肩部边缘存在破损风险',
+        'FACIAL_FEATURE_CORRUPTED': '五官区域疑似受污染，建议重新处理或更换原图',
+    }
+
+    def _cv2(self):
+        try:
+            import cv2
+
+            return cv2
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_face_box(face_box: dict[str, int] | None, width: int, height: int) -> dict[str, int] | None:
+        if not face_box:
+            return None
+        x = max(0, min(width - 1, int(face_box.get('x', 0))))
+        y = max(0, min(height - 1, int(face_box.get('y', 0))))
+        w = max(1, min(width - x, int(face_box.get('width', 1))))
+        h = max(1, min(height - y, int(face_box.get('height', 1))))
+        return {'x': x, 'y': y, 'width': w, 'height': h}
+
+    def _face_region_masks(self, face_box: dict[str, int], image_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+        h, w = image_shape
+        x, y, fw, fh = face_box['x'], face_box['y'], face_box['width'], face_box['height']
+        yy, xx = np.ogrid[:h, :w]
+        cx = x + fw * 0.5
+        cy = y + fh * 0.48
+        rx = max(1.0, fw * 0.47)
+        ry = max(1.0, fh * 0.55)
+        face_core = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
+
+        fx0 = int(max(0, x + fw * 0.18))
+        fx1 = int(min(w, x + fw * 0.82))
+        fy0 = int(max(0, y + fh * 0.22))
+        fy1 = int(min(h, y + fh * 0.78))
+        features = np.zeros((h, w), dtype=bool)
+        features[fy0:fy1, fx0:fx1] = True
+        return face_core, features
+
+    def evaluate(
+        self,
+        source_image: Image.Image,
+        output_image: Image.Image,
+        foreground_rgba: Image.Image,
+        face_box: dict[str, int] | None,
+        background_color: str,
+    ) -> OutputQualityResult:
+        cv2 = self._cv2()
+        src_rgb = np.asarray(source_image.convert('RGB'), dtype=np.uint8)
+        out_rgb = np.asarray(output_image.convert('RGB'), dtype=np.uint8)
+        alpha = np.asarray(foreground_rgba.convert('RGBA').getchannel('A'), dtype=np.uint8)
+
+        h, w = out_rgb.shape[:2]
+        safe_box = self._safe_face_box(face_box, w, h)
+
+        bg_color = background_color.lower()
+        reason_codes: list[str] = []
+        warnings: list[str] = []
+        metrics: dict[str, float] = {}
+
+        if safe_box is not None:
+            face_core, features_mask = self._face_region_masks(safe_box, (h, w))
+            out_face = out_rgb[face_core]
+            src_face = src_rgb[face_core] if src_rgb.shape[:2] == out_rgb.shape[:2] else out_face
+            if out_face.size > 0:
+                b = out_face[:, 2].astype(np.float32)
+                g = out_face[:, 1].astype(np.float32)
+                r = out_face[:, 0].astype(np.float32)
+                blue_cast = float(np.mean(b - (r + g) * 0.5))
+                red_cast = float(np.mean(r - (b + g) * 0.5))
+
+                if cv2 is not None:
+                    hsv = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2HSV)
+                    sat = hsv[:, :, 1].astype(np.float32) / 255.0
+                else:
+                    sat = rgb2hsv(out_rgb.astype(np.float32) / 255.0)[:, :, 1].astype(np.float32)
+                face_sat = float(np.mean(sat[face_core]))
+
+                src_face_mean = np.mean(src_face.astype(np.float32), axis=0)
+                out_face_mean = np.mean(out_face.astype(np.float32), axis=0)
+                tone_shift = float(np.linalg.norm(out_face_mean - src_face_mean))
+
+                pollution = red_cast if bg_color == 'red' else blue_cast if bg_color == 'blue' else max(red_cast, blue_cast)
+                feature_region = out_rgb[features_mask]
+                feature_pollution = 0.0
+                if feature_region.size > 0:
+                    fr = feature_region[:, 0].astype(np.float32)
+                    fg = feature_region[:, 1].astype(np.float32)
+                    fb = feature_region[:, 2].astype(np.float32)
+                    target = fr - (fg + fb) * 0.5 if bg_color == 'red' else fb - (fr + fg) * 0.5 if bg_color == 'blue' else np.maximum(fr, fb) - fg
+                    feature_pollution = float(np.mean(target > 20.0))
+
+                metrics.update(
+                    {
+                        'face_color_pollution': float(pollution),
+                        'face_saturation': face_sat,
+                        'skin_tone_shift': tone_shift,
+                        'feature_pollution_ratio': feature_pollution,
+                    }
+                )
+
+                if pollution >= self.SKIN_RED_BLUE_CAST_FAIL:
+                    reason_codes.append('FACE_COLOR_POLLUTION')
+                elif pollution >= self.SKIN_RED_BLUE_CAST_WARN:
+                    warnings.append('FACE_COLOR_POLLUTION')
+
+                if tone_shift >= self.SKIN_RED_BLUE_CAST_FAIL or face_sat >= self.SKIN_SAT_FAIL:
+                    reason_codes.append('SKIN_TONE_ABNORMAL')
+                elif tone_shift >= self.SKIN_RED_BLUE_CAST_WARN or face_sat >= self.SKIN_SAT_WARN:
+                    warnings.append('SKIN_TONE_ABNORMAL')
+
+                if feature_pollution >= self.FEATURE_POLLUTION_FAIL:
+                    reason_codes.append('FACIAL_FEATURE_CORRUPTED')
+                elif feature_pollution >= self.FEATURE_POLLUTION_WARN:
+                    warnings.append('FACIAL_FEATURE_CORRUPTED')
+
+        edge_band = (alpha > 8) & (alpha < 248)
+        edge_noise = 0.0
+        if np.any(edge_band):
+            region = edge_band.astype(bool)
+            if cv2 is not None:
+                edge_u8 = region.astype(np.uint8)
+                contours, _ = cv2.findContours(edge_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+                contour_len = sum(float(cv2.arcLength(cnt, closed=True)) for cnt in contours)
+            else:
+                contour_len = 0.0
+                for contour in find_contours(region.astype(np.float32), 0.5):
+                    if contour.shape[0] > 1:
+                        diffs = np.diff(contour, axis=0)
+                        contour_len += float(np.sum(np.linalg.norm(diffs, axis=1)))
+            area = float(np.count_nonzero(region))
+            perimeter_len = float(perimeter(region)) if area > 0 else 0.0
+            edge_noise = contour_len / max(perimeter_len, 1.0)
+            metrics['edge_noise_score'] = edge_noise
+
+            if edge_noise >= self.EDGE_NOISE_FAIL:
+                reason_codes.append('FOREGROUND_EDGE_BROKEN')
+            elif edge_noise >= self.EDGE_NOISE_WARN:
+                warnings.append('FOREGROUND_EDGE_BROKEN')
+
+        reason_codes = sorted(set(reason_codes), key=lambda code: -self.ISSUE_PRIORITY.get(code, 0))
+        warnings = sorted(set(warnings), key=lambda code: -self.ISSUE_PRIORITY.get(code, 0))
+
+        if reason_codes:
+            primary = reason_codes[0]
+            return OutputQualityResult(
+                status=FAIL,
+                reason_codes=reason_codes,
+                warnings=warnings,
+                primary_issue=primary,
+                primary_message=self.ISSUE_MESSAGES.get(primary),
+                metrics=metrics,
+            )
+
+        if warnings:
+            primary = warnings[0]
+            return OutputQualityResult(
+                status=WARNING,
+                reason_codes=[],
+                warnings=warnings,
+                primary_issue=primary,
+                primary_message=self.ISSUE_MESSAGES.get(primary),
+                metrics=metrics,
+            )
+
+        return OutputQualityResult(
+            status=PASS,
+            reason_codes=[],
+            warnings=[],
+            primary_issue=None,
+            primary_message='输出成片质量正常',
+            metrics=metrics,
+        )

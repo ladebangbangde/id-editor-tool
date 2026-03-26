@@ -24,6 +24,11 @@ class GenerateData(BaseModel):
     secondaryWarnings: List[str] = Field(default_factory=list)
     qualityStatus: str = 'PASS'
     qualityMessage: str = '照片质量良好，可直接处理'
+    outputQualityStatus: str = 'PASS'
+    outputQualityMessage: str = '输出成片质量正常'
+    outputReasonCodes: List[str] = Field(default_factory=list)
+    allowPreviewSave: bool = True
+    allowHdSave: bool = True
     previewWidth: int = 0
     previewHeight: int = 0
     previewFormat: str = 'JPEG'
@@ -39,3 +44,4 @@ class GenerateData(BaseModel):
     complianceMessage: str = '满足证件照合规要求'
     complianceDetails: List[DetectIssue] = Field(default_factory=list)
     safeToSubmit: bool = True
+    outputQualityMetrics: dict[str, float] = Field(default_factory=dict)

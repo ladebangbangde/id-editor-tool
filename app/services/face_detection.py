@@ -69,6 +69,7 @@ class FaceDetectionService:
         'EXTREME_LIGHTING': ['请在光线更均匀的环境中拍摄'],
         'EYE_OCCLUDED': ['请保持双眼自然睁开并直视镜头，避免眨眼/单眼闭合'],
         'HAND_OCCLUSION': ['请移开手势，确保面部五官无遮挡后再拍摄'],
+        'EXAGGERATED_EXPRESSION': ['请保持自然表情并闭口，不要吐舌或做夸张表情'],
     }
 
     def __init__(self) -> None:
