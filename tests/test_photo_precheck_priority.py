@@ -29,6 +29,7 @@ def test_single_eye_closed_is_failed_and_primary_over_blur():
     svc._detect_visible_eyes = lambda image, face_box: 2
     svc._detect_eye_state_via_mesh = lambda image, face_box: ('single_eye_closed', {'left_eye_ear': 0.12, 'right_eye_ear': 0.27})
     svc._detect_hand_on_face = lambda image, face_box: ('clear', 0.0)
+    svc._detect_expression_via_mesh = lambda image, face_box: ('neutral', {'mouth_open_ratio': 0.05, 'tongue_pixel_ratio': 0.0})
     svc._detect_neck_accessory = lambda image, face_box: (0.0, {})
 
     img = Image.new('RGB', (800, 1000), 'white')
@@ -55,6 +56,7 @@ def test_hand_covering_face_is_failed():
     svc._detect_visible_eyes = lambda image, face_box: 2
     svc._detect_eye_state_via_mesh = lambda image, face_box: ('open', {'left_eye_ear': 0.30, 'right_eye_ear': 0.31})
     svc._detect_hand_on_face = lambda image, face_box: ('fail', 0.04)
+    svc._detect_expression_via_mesh = lambda image, face_box: ('neutral', {'mouth_open_ratio': 0.05, 'tongue_pixel_ratio': 0.0})
     svc._detect_neck_accessory = lambda image, face_box: (0.0, {})
 
     img = Image.new('RGB', (800, 1000), 'white')
@@ -62,3 +64,31 @@ def test_hand_covering_face_is_failed():
 
     assert result.status == FAIL
     assert 'HAND_OCCLUSION' in result.reason_codes
+
+
+def test_tongue_out_expression_is_warned():
+    svc = PhotoPrecheckService()
+    svc.metrics_service.calculate = lambda image, face_box: {
+        'blur_score': 120.0,
+        'brightness': 130.0,
+        'edge_density': 0.1,
+        'face_width_ratio': 0.32,
+        'face_height_ratio': 0.42,
+        'face_center_x': 0.5,
+        'face_center_y': 0.5,
+    }
+    svc._detect_faces = lambda image: [_mock_face()]
+    svc._detect_visible_eyes = lambda image, face_box: 2
+    svc._detect_eye_state_via_mesh = lambda image, face_box: ('open', {'left_eye_ear': 0.30, 'right_eye_ear': 0.31})
+    svc._detect_hand_on_face = lambda image, face_box: ('clear', 0.0)
+    svc._detect_expression_via_mesh = lambda image, face_box: (
+        'tongue_out_warn',
+        {'mouth_open_ratio': 0.19, 'tongue_pixel_ratio': 0.04},
+    )
+    svc._detect_neck_accessory = lambda image, face_box: (0.0, {})
+
+    img = Image.new('RGB', (800, 1000), 'white')
+    result = svc.precheck(img)
+
+    assert result.status == 'WARNING'
+    assert 'EXAGGERATED_EXPRESSION' in result.warning_codes
