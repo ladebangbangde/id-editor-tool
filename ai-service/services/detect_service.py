@@ -84,6 +84,8 @@ class DetectService:
     @staticmethod
     def _build_suggestion(validation_result: ValidationOutcome, quality_details: dict) -> str:
         if validation_result.passed:
+            if validation_result.warnings:
+                return validation_result.warnings[0]
             return '照片可以直接进入证件照制作流程'
         if not validation_result.hasFace:
             return '请上传单人正脸、五官清晰、背景相对简洁的照片'
@@ -147,8 +149,13 @@ class DetectService:
             'code': validation_result.auditCode,
             'message': validation_result.auditMessage,
             'details': validation_result.auditDetails,
+            'warnings': validation_result.warnings,
         }
-        if validation_result.passed and quality_details['qualityStatus'] != 'passed':
+        if (
+            validation_result.passed
+            and validation_result.auditStatus == 'passed'
+            and quality_details['qualityStatus'] != 'passed'
+        ):
             audit_result = {
                 'status': 'warning',
                 'code': 'QUALITY_WARNING',
@@ -160,6 +167,7 @@ class DetectService:
                         'message': quality_details['qualityMessage'],
                     }
                 ],
+                'warnings': validation_result.warnings + [quality_details['qualityMessage']],
             }
 
         final_quality_status = quality_details['qualityStatus']

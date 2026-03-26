@@ -76,6 +76,7 @@ class ValidationOutcome:
     auditMessage: str = '审核通过'
     auditDetails: list[dict] = field(default_factory=list)
     keypointConfidences: dict[str, float] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -98,6 +99,7 @@ class ValidationOutcome:
                 'details': self.auditDetails,
             },
             'keypointConfidences': self.keypointConfidences,
+            'warnings': self.warnings,
         }
 
 
@@ -105,16 +107,16 @@ class ValidationService:
     reason_priority = [
         ERROR_NO_FACE_DETECTED,
         ERROR_MULTIPLE_FACES_DETECTED,
-        ERROR_FACE_OCCLUDED,
         ERROR_EYE_OCCLUDED,
+        ERROR_POSE_INVALID,
+        ERROR_FACE_OCCLUDED,
         ERROR_FACIAL_KEYPOINTS_INCOMPLETE,
         ERROR_HAND_OCCLUSION,
         ERROR_HEADWEAR_DETECTED,
         ERROR_NOT_SINGLE_FRONTAL_FACE,
-        ERROR_IMAGE_TOO_BLURRY,
         ERROR_FACE_TOO_SMALL,
-        ERROR_POSE_INVALID,
         ERROR_HEAD_CROPPED,
+        ERROR_IMAGE_TOO_BLURRY,
     ]
 
     detect_messages = {
@@ -292,6 +294,7 @@ class ValidationService:
         non_priority = [reason for reason in reasons if reason not in ordered_reasons]
         ordered_reasons.extend(non_priority)
         passed = not ordered_reasons
+        warnings: list[str] = []
         if passed:
             audit_status = 'passed'
             audit_code = 'VALIDATION_PASSED'
@@ -313,6 +316,7 @@ class ValidationService:
         compliance_codes = {item['code'] for item in compliance_details}
         audit_details = list(compliance_details)
         for warning in compliance_result.get('warnings', []) if 'compliance_result' in locals() else []:
+            warnings.append(warning)
             audit_details.append(
                 {
                     'code': 'COMPLIANCE_WARNING',
@@ -321,6 +325,11 @@ class ValidationService:
                     'stage': 'keypoint_detection',
                 }
             )
+        compliance_warning_details = [
+            item for item in compliance_details if item.get('status') == 'warning' and item.get('message')
+        ]
+        for item in compliance_warning_details:
+            warnings.append(item['message'])
         for reason in ordered_reasons:
             if reason in compliance_codes:
                 continue
@@ -332,6 +341,10 @@ class ValidationService:
                     'stage': 'validation',
                 }
             )
+        if passed and warnings:
+            audit_status = 'warning'
+            audit_code = 'COMPLIANCE_WARNING'
+            audit_message = warnings[0]
         return ValidationOutcome(
             hasFace=has_face,
             faceCount=face_count,
@@ -350,6 +363,7 @@ class ValidationService:
             auditMessage=audit_message,
             auditDetails=audit_details,
             keypointConfidences=compliance_result['keypointConfidences'] if 'compliance_result' in locals() else {},
+            warnings=warnings,
         )
 
     def build_generate_error(self, reasons: list[str]) -> tuple[str, str]:

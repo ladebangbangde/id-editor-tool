@@ -73,6 +73,55 @@ class Settings(BaseSettings):
         default=0.16,
         validation_alias=AliasChoices('HAND_OCCLUSION_SKIN_RATIO_THRESHOLD'),
     )
+    # 证件照睁眼审核阈值：低于该值认为单眼明显闭合（建议范围 0.16~0.24）
+    eye_open_ratio_fail_threshold: float = Field(
+        default=0.2,
+        validation_alias=AliasChoices('EYE_OPEN_RATIO_FAIL_THRESHOLD'),
+    )
+    # 证件照睁眼审核阈值：低于该值认为轻微眯眼（建议范围 0.23~0.30）
+    eye_open_ratio_warn_threshold: float = Field(
+        default=0.27,
+        validation_alias=AliasChoices('EYE_OPEN_RATIO_WARN_THRESHOLD'),
+    )
+    # 左右眼开合差异阈值：超过时提示开眼不对称（建议范围 0.10~0.18）
+    eye_asymmetry_warn_threshold: float = Field(
+        default=0.14,
+        validation_alias=AliasChoices('EYE_ASYMMETRY_WARN_THRESHOLD'),
+    )
+    # 姿态阈值：头部旋转(roll)超过该角度直接失败（建议范围 12~18）
+    head_roll_fail_degrees: float = Field(default=14.0, validation_alias=AliasChoices('HEAD_ROLL_FAIL_DEGREES'))
+    # 姿态阈值：头部旋转(roll)超过该角度告警（建议范围 7~12）
+    head_roll_warn_degrees: float = Field(default=8.0, validation_alias=AliasChoices('HEAD_ROLL_WARN_DEGREES'))
+    # 姿态阈值：yaw 超过该值直接失败（建议范围 0.18~0.28）
+    yaw_fail_threshold: float = Field(default=0.22, validation_alias=AliasChoices('YAW_FAIL_THRESHOLD'))
+    # 姿态阈值：yaw 超过该值告警（建议范围 0.10~0.16）
+    yaw_warn_threshold: float = Field(default=0.12, validation_alias=AliasChoices('YAW_WARN_THRESHOLD'))
+    # 姿态阈值：pitch 超过该值直接失败（建议范围 0.20~0.30）
+    pitch_fail_threshold: float = Field(default=0.24, validation_alias=AliasChoices('PITCH_FAIL_THRESHOLD'))
+    # 姿态阈值：pitch 超过该值告警（建议范围 0.10~0.18）
+    pitch_warn_threshold: float = Field(default=0.14, validation_alias=AliasChoices('PITCH_WARN_THRESHOLD'))
+    # 表情阈值：笑容区域宽度占比超过该值提示表情不规范（建议范围 0.42~0.58）
+    smile_ratio_warn_threshold: float = Field(
+        default=0.5,
+        validation_alias=AliasChoices('SMILE_RATIO_WARN_THRESHOLD'),
+    )
+    # matte 收敛参数：alpha gamma 越大边缘越保守（建议范围 1.3~2.2）
+    composite_alpha_gamma: float = Field(default=1.75, validation_alias=AliasChoices('COMPOSITE_ALPHA_GAMMA'))
+    # matte 收敛参数：上半身扩张核（建议范围 1~3）
+    composite_dilate_kernel_upper: int = Field(
+        default=1,
+        validation_alias=AliasChoices('COMPOSITE_DILATE_KERNEL_UPPER'),
+    )
+    # matte 收敛参数：下半身扩张核，保护衣领肩部（建议范围 2~5）
+    composite_dilate_kernel_lower: int = Field(
+        default=3,
+        validation_alias=AliasChoices('COMPOSITE_DILATE_KERNEL_LOWER'),
+    )
+    # matte 收敛参数：下半身分界占比（建议范围 0.45~0.65）
+    composite_lower_protect_ratio: float = Field(
+        default=0.52,
+        validation_alias=AliasChoices('COMPOSITE_LOWER_PROTECT_RATIO'),
+    )
 
     min_valid_face_width: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_WIDTH'))
     min_valid_face_height: int = Field(default=60, validation_alias=AliasChoices('MIN_VALID_FACE_HEIGHT'))
