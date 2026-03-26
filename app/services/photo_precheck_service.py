@@ -69,6 +69,7 @@ class PhotoPrecheckService:
         'MOUTH_OPEN': '检测到明显张嘴',
         'SMILE_TOO_BROAD': '笑容幅度过大',
         'MOUTH_ASYMMETRY': '嘴部明显歪斜',
+        'WINK_EXPRESSION': '检测到明显挤眼搞怪表情',
     }
 
     ISSUE_PRIORITY = {
@@ -80,6 +81,7 @@ class PhotoPrecheckService:
         'MOUTH_OPEN': 90,
         'SMILE_TOO_BROAD': 89,
         'MOUTH_ASYMMETRY': 88,
+        'WINK_EXPRESSION': 92,
         'EXAGGERATED_EXPRESSION': 91,
         'SEVERE_POSE': 80,
         'HEAD_SHOULDER_INCOMPLETE': 78,
@@ -96,6 +98,11 @@ class PhotoPrecheckService:
     EYE_ASPECT_WARN_THRESHOLD = 0.23  # 轻微眯眼：建议范围 0.21~0.27
     EYE_ASYMMETRY_FAIL_THRESHOLD = 0.12  # 单眼闭合风险：建议范围 0.10~0.16
     EYE_ASYMMETRY_WARN_THRESHOLD = 0.08  # 开眼不对称告警：建议范围 0.06~0.12
+    WINK_ASYMMETRY_FAIL_THRESHOLD = 0.15
+    WINK_EYE_OPEN_MIN_THRESHOLD = 0.24
+    WINK_BROW_EYE_DIFF_FAIL_THRESHOLD = 0.020
+    WINK_MOUTH_SQUEEZE_FAIL_THRESHOLD = 0.050
+    WINK_EXPRESSION_SCORE_FAIL_THRESHOLD = 0.70
     HAND_FACE_OVERLAP_FAIL_THRESHOLD = 0.015  # 手部遮挡面部面积占比失败阈值
     HAND_FACE_OVERLAP_WARN_THRESHOLD = 0.006  # 手部遮挡面部面积占比告警阈值
     MOUTH_OPEN_RATIO_FAIL_THRESHOLD = 0.34  # 明显张嘴（发音/大笑）失败阈值
@@ -332,12 +339,52 @@ class PhotoPrecheckService:
         left_ear = self._eye_aspect_ratio_from_mesh(face_landmarks, w, h, 'left')
         right_ear = self._eye_aspect_ratio_from_mesh(face_landmarks, w, h, 'right')
         min_ear = min(left_ear, right_ear)
+        max_ear = max(left_ear, right_ear)
         asym = abs(left_ear - right_ear)
+
+        left_brow = self._landmark_point(face_landmarks, 105, w, h)
+        right_brow = self._landmark_point(face_landmarks, 334, w, h)
+        left_eye_upper = self._landmark_point(face_landmarks, 159, w, h)
+        right_eye_upper = self._landmark_point(face_landmarks, 386, w, h)
+        brow_eye_left = abs(left_brow[1] - left_eye_upper[1]) / max(face_box.height, 1.0)
+        brow_eye_right = abs(right_brow[1] - right_eye_upper[1]) / max(face_box.height, 1.0)
+        brow_eye_diff = abs(brow_eye_left - brow_eye_right)
+
+        nose_tip = self._landmark_point(face_landmarks, 4, w, h)
+        mouth_left = self._landmark_point(face_landmarks, 61, w, h)
+        mouth_right = self._landmark_point(face_landmarks, 291, w, h)
+        mouth_width = float(np.linalg.norm(np.array(mouth_left) - np.array(mouth_right)))
+        nose_mouth_left = float(np.linalg.norm(np.array(nose_tip) - np.array(mouth_left)))
+        nose_mouth_right = float(np.linalg.norm(np.array(nose_tip) - np.array(mouth_right)))
+        mouth_squeeze_asym = abs(nose_mouth_left - nose_mouth_right) / max(mouth_width, 1.0)
+
+        wink_score = min(
+            1.0,
+            0.42 * (asym / max(self.WINK_ASYMMETRY_FAIL_THRESHOLD, 1e-6))
+            + 0.25 * (max(max_ear - min_ear, 0.0) / max(self.EYE_ASPECT_WARN_THRESHOLD, 1e-6))
+            + 0.18 * (brow_eye_diff / max(self.WINK_BROW_EYE_DIFF_FAIL_THRESHOLD, 1e-6))
+            + 0.15 * (mouth_squeeze_asym / max(self.WINK_MOUTH_SQUEEZE_FAIL_THRESHOLD, 1e-6)),
+        )
         metrics = {
             'left_eye_ear': float(left_ear),
             'right_eye_ear': float(right_ear),
             'eye_asymmetry': float(asym),
+            'eye_brow_diff': float(brow_eye_diff),
+            'eye_mouth_squeeze_asym': float(mouth_squeeze_asym),
+            'wink_expression_score': float(wink_score),
         }
+
+        if (
+            min_ear <= self.EYE_ASPECT_WARN_THRESHOLD
+            and max_ear >= self.WINK_EYE_OPEN_MIN_THRESHOLD
+            and asym >= self.WINK_ASYMMETRY_FAIL_THRESHOLD
+            and (
+                brow_eye_diff >= self.WINK_BROW_EYE_DIFF_FAIL_THRESHOLD
+                or mouth_squeeze_asym >= self.WINK_MOUTH_SQUEEZE_FAIL_THRESHOLD
+                or wink_score >= self.WINK_EXPRESSION_SCORE_FAIL_THRESHOLD
+            )
+        ):
+            return 'wink_expression', metrics
 
         if min_ear <= self.EYE_ASPECT_FAIL_THRESHOLD:
             if asym >= self.EYE_ASYMMETRY_FAIL_THRESHOLD:
@@ -549,7 +596,14 @@ class PhotoPrecheckService:
             metrics['visible_eye_count'] = float(visible_eyes)
             eye_state, eye_metrics = self._detect_eye_state_via_mesh(image, face_box)
             metrics.update(eye_metrics)
-            if eye_state == 'single_eye_closed':
+            if eye_state == 'wink_expression':
+                self._append_issue(
+                    issues,
+                    'WINK_EXPRESSION',
+                    '检测到明显挤眼或搞怪表情，请保持双眼自然睁开后重拍',
+                    FAIL,
+                )
+            elif eye_state == 'single_eye_closed':
                 self._append_issue(issues, 'EYE_OCCLUDED', '检测到单眼闭合，当前照片不适合作为证件照提交', FAIL)
             elif eye_state == 'both_eyes_closed':
                 self._append_issue(issues, 'EYE_OCCLUDED', '检测到双眼闭合，当前照片不适合作为证件照提交', FAIL)

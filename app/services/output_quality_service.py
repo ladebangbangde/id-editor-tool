@@ -19,6 +19,7 @@ class OutputQualityResult:
     primary_issue: str | None = None
     primary_message: str | None = None
     metrics: dict[str, float] = field(default_factory=dict)
+    pollution_mask: Image.Image | None = None
 
 
 class OutputQualityService:
@@ -32,12 +33,17 @@ class OutputQualityService:
     EDGE_NOISE_WARN = 0.21
     FEATURE_POLLUTION_FAIL = 0.18
     FEATURE_POLLUTION_WARN = 0.10
+    CLOTH_POLLUTION_SHIFT_FAIL = 24.0
+    CLOTH_POLLUTION_SHIFT_WARN = 15.0
+    CLOTH_POLLUTION_RATIO_FAIL = 0.26
+    CLOTH_POLLUTION_RATIO_WARN = 0.16
 
     ISSUE_PRIORITY = {
         'FACE_COLOR_POLLUTION': 100,
         'FACIAL_FEATURE_CORRUPTED': 95,
         'SKIN_TONE_ABNORMAL': 90,
         'FOREGROUND_EDGE_BROKEN': 85,
+        'CLOTH_COLOR_POLLUTION': 84,
     }
 
     ISSUE_MESSAGES = {
@@ -45,6 +51,7 @@ class OutputQualityService:
         'SKIN_TONE_ABNORMAL': '脸部肤色偏差较大，建议更换光线更均匀的照片',
         'FOREGROUND_EDGE_BROKEN': '人物边界质量异常，头发或肩部边缘存在破损风险',
         'FACIAL_FEATURE_CORRUPTED': '五官区域疑似受污染，建议重新处理或更换原图',
+        'CLOTH_COLOR_POLLUTION': '衣服或肩部区域存在明显串色，请更换更干净原图后重试',
     }
 
     def _cv2(self):
@@ -103,6 +110,7 @@ class OutputQualityService:
         reason_codes: list[str] = []
         warnings: list[str] = []
         metrics: dict[str, float] = {}
+        pollution_mask = np.zeros((h, w), dtype=np.uint8)
 
         if safe_box is not None:
             face_core, features_mask = self._face_region_masks(safe_box, (h, w))
@@ -160,6 +168,50 @@ class OutputQualityService:
                 elif feature_pollution >= self.FEATURE_POLLUTION_WARN:
                     warnings.append('FACIAL_FEATURE_CORRUPTED')
 
+            cx0 = int(max(0, safe_box['x'] - safe_box['width'] * 0.35))
+            cx1 = int(min(w, safe_box['x'] + safe_box['width'] * 1.35))
+            cy0 = int(min(h - 1, safe_box['y'] + safe_box['height'] * 0.78))
+            cy1 = int(min(h, safe_box['y'] + safe_box['height'] * 2.35))
+            if cx1 > cx0 and cy1 > cy0:
+                cloth_roi = np.zeros((h, w), dtype=bool)
+                cloth_roi[cy0:cy1, cx0:cx1] = True
+                cloth_roi = cloth_roi & (~face_core) & (alpha > 16)
+                cloth_core = cloth_roi & (alpha > 220)
+                cloth_edge = cloth_roi & (alpha >= 50) & (alpha <= 220)
+                if np.count_nonzero(cloth_edge) > 80 and np.count_nonzero(cloth_core) > 80:
+                    cloth_pixels = out_rgb[cloth_edge].astype(np.float32)
+                    cloth_core_pixels = out_rgb[cloth_core].astype(np.float32)
+                    if bg_color == 'red':
+                        edge_dom = cloth_pixels[:, 0] - (cloth_pixels[:, 1] + cloth_pixels[:, 2]) * 0.5
+                        core_dom = cloth_core_pixels[:, 0] - (cloth_core_pixels[:, 1] + cloth_core_pixels[:, 2]) * 0.5
+                    elif bg_color == 'blue':
+                        edge_dom = cloth_pixels[:, 2] - (cloth_pixels[:, 0] + cloth_pixels[:, 1]) * 0.5
+                        core_dom = cloth_core_pixels[:, 2] - (cloth_core_pixels[:, 0] + cloth_core_pixels[:, 1]) * 0.5
+                    else:
+                        edge_dom = np.maximum(cloth_pixels[:, 0], cloth_pixels[:, 2]) - cloth_pixels[:, 1]
+                        core_dom = np.maximum(cloth_core_pixels[:, 0], cloth_core_pixels[:, 2]) - cloth_core_pixels[:, 1]
+
+                    core_baseline = float(np.percentile(core_dom, 45))
+                    edge_mean = float(np.mean(edge_dom))
+                    cloth_shift = edge_mean - core_baseline
+                    cloth_ratio = float(np.mean(edge_dom > (core_baseline + 18.0)))
+
+                    pollution_hits = np.zeros_like(alpha, dtype=bool)
+                    pollution_hits[cloth_edge] = edge_dom > (core_baseline + 18.0)
+                    pollution_mask[pollution_hits] = 255
+
+                    metrics.update(
+                        {
+                            'cloth_pollution_shift': cloth_shift,
+                            'cloth_pollution_ratio': cloth_ratio,
+                        }
+                    )
+
+                    if cloth_shift >= self.CLOTH_POLLUTION_SHIFT_FAIL and cloth_ratio >= self.CLOTH_POLLUTION_RATIO_FAIL:
+                        reason_codes.append('CLOTH_COLOR_POLLUTION')
+                    elif cloth_shift >= self.CLOTH_POLLUTION_SHIFT_WARN or cloth_ratio >= self.CLOTH_POLLUTION_RATIO_WARN:
+                        warnings.append('CLOTH_COLOR_POLLUTION')
+
         edge_band = (alpha > 8) & (alpha < 248)
         edge_noise = 0.0
         if np.any(edge_band):
@@ -196,6 +248,7 @@ class OutputQualityService:
                 primary_issue=primary,
                 primary_message=self.ISSUE_MESSAGES.get(primary),
                 metrics=metrics,
+                pollution_mask=Image.fromarray(pollution_mask, mode='L'),
             )
 
         if warnings:
@@ -207,6 +260,7 @@ class OutputQualityService:
                 primary_issue=primary,
                 primary_message=self.ISSUE_MESSAGES.get(primary),
                 metrics=metrics,
+                pollution_mask=Image.fromarray(pollution_mask, mode='L'),
             )
 
         return OutputQualityResult(
@@ -216,4 +270,5 @@ class OutputQualityService:
             primary_issue=None,
             primary_message='输出成片质量正常',
             metrics=metrics,
+            pollution_mask=Image.fromarray(pollution_mask, mode='L'),
         )

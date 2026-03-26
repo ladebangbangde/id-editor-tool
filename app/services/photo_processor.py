@@ -180,7 +180,7 @@ class PhotoProcessor:
             raise HeadAccessoryError(message, details)
         if code == 'HAND_OCCLUSION':
             raise HandOcclusionError(message, details)
-        if code == 'EYE_OCCLUDED':
+        if code in {'EYE_OCCLUDED', 'WINK_EXPRESSION', 'EXAGGERATED_EYE_EXPRESSION'}:
             raise EyeOccludedError(message, details)
         if code == 'FACE_OCCLUDED':
             raise FaceOccludedError(message, details)
@@ -243,6 +243,10 @@ class PhotoProcessor:
             save_image(refined.alpha, self.storage.temp_path(task_id, 'refined_alpha.png'))
             save_image(refined.trimap, self.storage.temp_path(task_id, 'trimap.png'))
             save_image(refined_rgba, self.storage.temp_path(task_id, 'refined_foreground.png'))
+            if refined.edge_band_mask is not None:
+                save_image(refined.edge_band_mask, self.storage.temp_path(task_id, 'edge_band_mask.png'))
+            if refined.decontaminated_foreground is not None:
+                save_image(refined.decontaminated_foreground, self.storage.temp_path(task_id, 'decontaminated_foreground.png'))
 
         cropped_rgba = self.cropper.crop(refined_rgba, spec, detect_result.primary_face)
         logger.info('Portrait cropped to target size')
@@ -263,6 +267,8 @@ class PhotoProcessor:
             background_color=background_color,
         )
         logger.info('Output quality evaluated status=%s reasons=%s warnings=%s', output_quality.status, output_quality.reason_codes, output_quality.warnings)
+        if self.settings.save_intermediate and output_quality.pollution_mask is not None:
+            save_image(output_quality.pollution_mask, self.storage.temp_path(task_id, 'clothing_pollution_mask.png'))
 
         preview_image, preview_quality = self._build_preview_image(hd_image)
 
@@ -276,7 +282,16 @@ class PhotoProcessor:
         intermediate_files = None
         if self.settings.save_intermediate:
             intermediate_files = {}
-            for name in ('foreground.png', 'refined_alpha.png', 'trimap.png', 'refined_foreground.png', 'cropped_rgba.png'):
+            for name in (
+                'foreground.png',
+                'refined_alpha.png',
+                'trimap.png',
+                'refined_foreground.png',
+                'edge_band_mask.png',
+                'decontaminated_foreground.png',
+                'cropped_rgba.png',
+                'clothing_pollution_mask.png',
+            ):
                 path = self.storage.temp_path(task_id, name)
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)
