@@ -42,6 +42,10 @@ class SegmentationService:
         threshold = max(22.0, float(np.percentile(dist, 65)))
         alpha = np.clip((dist - threshold * 0.45) / max(threshold * 0.9, 1.0), 0, 1)
         alpha = (alpha * 255).astype(np.uint8)
+        # 下半身(衣领/肩部)区域保守保留，避免背景替换后衣服被侵蚀。
+        split = int(alpha.shape[0] * 0.52)
+        split = max(1, min(alpha.shape[0] - 1, split))
+        alpha[split:, :] = np.maximum(alpha[split:, :], 182)
         result = image.copy()
-        result.putalpha(Image.fromarray(alpha, mode='L').filter(ImageFilter.GaussianBlur(radius=1.2)))
+        result.putalpha(Image.fromarray(alpha, mode='L').filter(ImageFilter.GaussianBlur(radius=0.7)))
         return result

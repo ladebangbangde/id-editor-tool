@@ -67,6 +67,8 @@ class FaceDetectionService:
         'HEAD_SHOULDER_INCOMPLETE': ['请保证头顶、下巴和肩颈完整入镜'],
         'NOT_SUITABLE_PORTRAIT': ['请使用单人半身或头像照片'],
         'EXTREME_LIGHTING': ['请在光线更均匀的环境中拍摄'],
+        'EYE_OCCLUDED': ['请保持双眼自然睁开并直视镜头，避免眨眼/单眼闭合'],
+        'HAND_OCCLUSION': ['请移开手势，确保面部五官无遮挡后再拍摄'],
     }
 
     def __init__(self) -> None:

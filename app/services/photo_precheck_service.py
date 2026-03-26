@@ -67,19 +67,27 @@ class PhotoPrecheckService:
     }
 
     ISSUE_PRIORITY = {
-        'RESOLUTION_TOO_LOW': 100,
         'NO_FACE_DETECTED': 95,
         'MULTIPLE_FACES_DETECTED': 94,
-        'IMAGE_TOO_BLURRY': 90,
+        'HAND_OCCLUSION': 93,
+        'EYE_OCCLUDED': 92,
         'SEVERE_POSE': 80,
         'HEAD_SHOULDER_INCOMPLETE': 78,
         'FACE_RATIO_INVALID': 76,
         'JEWELRY_DETECTED': 74,
         'EXTREME_LIGHTING': 70,
         'NOT_SUITABLE_PORTRAIT': 60,
-        'HAND_OCCLUSION': 86,
-        'EYE_OCCLUDED': 84,
+        'IMAGE_TOO_BLURRY': 55,
+        'RESOLUTION_TOO_LOW': 54,
     }
+
+    # 证件照审核阈值（集中管理，便于调参）
+    EYE_ASPECT_FAIL_THRESHOLD = 0.17  # 明显闭眼：建议范围 0.15~0.20
+    EYE_ASPECT_WARN_THRESHOLD = 0.23  # 轻微眯眼：建议范围 0.21~0.27
+    EYE_ASYMMETRY_FAIL_THRESHOLD = 0.12  # 单眼闭合风险：建议范围 0.10~0.16
+    EYE_ASYMMETRY_WARN_THRESHOLD = 0.08  # 开眼不对称告警：建议范围 0.06~0.12
+    HAND_FACE_OVERLAP_FAIL_THRESHOLD = 0.015  # 手部遮挡面部面积占比失败阈值
+    HAND_FACE_OVERLAP_WARN_THRESHOLD = 0.006  # 手部遮挡面部面积占比告警阈值
 
     QUALITY_MESSAGES = {
         PASS: '照片质量良好，可直接进入处理流程',
@@ -91,6 +99,8 @@ class PhotoPrecheckService:
         self.settings = get_settings()
         self.metrics_service = PhotoMetricsService()
         self._detector = None
+        self._face_mesh = None
+        self._hands = None
 
     def _face_detector(self):
         if self._detector is not None:
@@ -103,6 +113,31 @@ class PhotoPrecheckService:
             min_detection_confidence=0.5,
         )
         return self._detector
+
+    def _face_mesh_detector(self):
+        if self._face_mesh is not None:
+            return self._face_mesh
+        import mediapipe as mp
+
+        self._face_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=False,
+            min_detection_confidence=0.5,
+        )
+        return self._face_mesh
+
+    def _hands_detector(self):
+        if self._hands is not None:
+            return self._hands
+        import mediapipe as mp
+
+        self._hands = mp.solutions.hands.Hands(
+            static_image_mode=True,
+            max_num_hands=2,
+            min_detection_confidence=0.5,
+        )
+        return self._hands
 
     @staticmethod
     def _append_issue(issues: list[PrecheckIssue], code: str, message: str, severity: str) -> None:
@@ -227,6 +262,102 @@ class PhotoPrecheckService:
         )
         return int(len(eyes))
 
+    @staticmethod
+    def _landmark_point(face_landmarks, index: int, width: int, height: int) -> tuple[float, float]:
+        lm = face_landmarks.landmark[index]
+        return lm.x * width, lm.y * height
+
+    def _eye_aspect_ratio_from_mesh(
+        self,
+        face_landmarks,
+        width: int,
+        height: int,
+        eye_type: str,
+    ) -> float:
+        # 使用 FaceMesh 关键点估计眼裂开合，低于阈值时保守阻断。
+        if eye_type == 'left':
+            horizontal = (33, 133)
+            vertical_a = (159, 145)
+            vertical_b = (160, 144)
+        else:
+            horizontal = (362, 263)
+            vertical_a = (386, 374)
+            vertical_b = (385, 380)
+
+        h0 = self._landmark_point(face_landmarks, horizontal[0], width, height)
+        h1 = self._landmark_point(face_landmarks, horizontal[1], width, height)
+        va0 = self._landmark_point(face_landmarks, vertical_a[0], width, height)
+        va1 = self._landmark_point(face_landmarks, vertical_a[1], width, height)
+        vb0 = self._landmark_point(face_landmarks, vertical_b[0], width, height)
+        vb1 = self._landmark_point(face_landmarks, vertical_b[1], width, height)
+
+        horizontal_dist = float(np.linalg.norm(np.array(h0) - np.array(h1)))
+        vertical_dist = (
+            float(np.linalg.norm(np.array(va0) - np.array(va1)))
+            + float(np.linalg.norm(np.array(vb0) - np.array(vb1)))
+        ) / 2.0
+        return vertical_dist / max(horizontal_dist, 1.0)
+
+    def _detect_eye_state_via_mesh(self, image: Image.Image, face_box: FaceBox) -> tuple[str, dict[str, float]]:
+        rgb = np.asarray(image.convert('RGB'))
+        h, w = rgb.shape[:2]
+        detector = self._face_mesh_detector()
+        result = detector.process(rgb)
+        if not result.multi_face_landmarks:
+            return 'unknown', {}
+
+        face_landmarks = result.multi_face_landmarks[0]
+        left_ear = self._eye_aspect_ratio_from_mesh(face_landmarks, w, h, 'left')
+        right_ear = self._eye_aspect_ratio_from_mesh(face_landmarks, w, h, 'right')
+        min_ear = min(left_ear, right_ear)
+        asym = abs(left_ear - right_ear)
+        metrics = {
+            'left_eye_ear': float(left_ear),
+            'right_eye_ear': float(right_ear),
+            'eye_asymmetry': float(asym),
+        }
+
+        if min_ear <= self.EYE_ASPECT_FAIL_THRESHOLD:
+            if asym >= self.EYE_ASYMMETRY_FAIL_THRESHOLD:
+                return 'single_eye_closed', metrics
+            return 'both_eyes_closed', metrics
+        if min_ear <= self.EYE_ASPECT_WARN_THRESHOLD or asym >= self.EYE_ASYMMETRY_WARN_THRESHOLD:
+            return 'eye_risk', metrics
+        return 'open', metrics
+
+    def _detect_hand_on_face(self, image: Image.Image, face_box: FaceBox) -> tuple[str, float]:
+        rgb = np.asarray(image.convert('RGB'))
+        h, w = rgb.shape[:2]
+        detector = self._hands_detector()
+        result = detector.process(rgb)
+        if not result.multi_hand_landmarks:
+            return 'clear', 0.0
+
+        face_left = face_box.x
+        face_top = face_box.y
+        face_right = face_box.x + face_box.width
+        face_bottom = face_box.y + face_box.height
+        face_area = max(face_box.width * face_box.height, 1)
+
+        overlap_pixels = 0.0
+        for hand in result.multi_hand_landmarks:
+            xs = [lm.x * w for lm in hand.landmark]
+            ys = [lm.y * h for lm in hand.landmark]
+            hand_left = max(min(xs), 0.0)
+            hand_right = min(max(xs), float(w))
+            hand_top = max(min(ys), 0.0)
+            hand_bottom = min(max(ys), float(h))
+            inter_w = max(0.0, min(face_right, hand_right) - max(face_left, hand_left))
+            inter_h = max(0.0, min(face_bottom, hand_bottom) - max(face_top, hand_top))
+            overlap_pixels += inter_w * inter_h
+
+        overlap_ratio = float(overlap_pixels) / float(face_area)
+        if overlap_ratio >= self.HAND_FACE_OVERLAP_FAIL_THRESHOLD:
+            return 'fail', overlap_ratio
+        if overlap_ratio >= self.HAND_FACE_OVERLAP_WARN_THRESHOLD:
+            return 'warn', overlap_ratio
+        return 'clear', overlap_ratio
+
     def _select_primary_issue(self, issues: list[PrecheckIssue]) -> PrecheckIssue | None:
         if not issues:
             return None
@@ -295,11 +426,26 @@ class PhotoPrecheckService:
 
             visible_eyes = self._detect_visible_eyes(image, face_box)
             metrics['visible_eye_count'] = float(visible_eyes)
-            if visible_eyes == 0:
-                self._append_issue(issues, 'EYE_OCCLUDED', '双眼不可见，疑似有手部或物体遮挡', FAIL)
-                self._append_issue(issues, 'HAND_OCCLUSION', '面部遮挡严重，不建议用于正式证件照', FAIL)
-            elif visible_eyes == 1:
-                self._append_issue(issues, 'EYE_OCCLUDED', '单眼可见，存在明显遮挡风险', WARNING)
+            eye_state, eye_metrics = self._detect_eye_state_via_mesh(image, face_box)
+            metrics.update(eye_metrics)
+            if eye_state == 'single_eye_closed':
+                self._append_issue(issues, 'EYE_OCCLUDED', '检测到单眼闭合，当前照片不适合作为证件照提交', FAIL)
+            elif eye_state == 'both_eyes_closed':
+                self._append_issue(issues, 'EYE_OCCLUDED', '检测到双眼闭合，当前照片不适合作为证件照提交', FAIL)
+            elif eye_state == 'eye_risk':
+                self._append_issue(issues, 'EYE_OCCLUDED', '双眼开合异常或不对称，存在审核风险', WARNING)
+            elif eye_state == 'unknown':
+                if visible_eyes <= 1:
+                    self._append_issue(issues, 'EYE_OCCLUDED', '眼部状态不稳定，建议重拍为双眼自然睁开', FAIL)
+                else:
+                    self._append_issue(issues, 'EYE_OCCLUDED', '眼部状态识别不稳定，存在审核风险', WARNING)
+
+            hand_state, hand_overlap = self._detect_hand_on_face(image, face_box)
+            metrics['hand_face_overlap'] = float(hand_overlap)
+            if hand_state == 'fail':
+                self._append_issue(issues, 'HAND_OCCLUSION', '检测到手势遮挡面部关键区域，不建议用于正式证件照', FAIL)
+            elif hand_state == 'warn':
+                self._append_issue(issues, 'HAND_OCCLUSION', '检测到手部接近面部，可能影响证件照审核', WARNING)
 
             jewelry_conf, jewelry_metrics = self._detect_neck_accessory(image, face_box)
             metrics.update(jewelry_metrics)
