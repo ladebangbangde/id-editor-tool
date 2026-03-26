@@ -29,6 +29,8 @@ from app.services.cropper import CropperService
 from app.services.enhancer import EnhancerService
 from app.services.face_detection import FaceDetectionResult, FaceDetectionService
 from app.services.layout import LayoutService
+from app.services.matte_refine_service import MatteRefineService
+from app.services.output_quality_service import OutputQualityService
 from app.services.segmentation import SegmentationService
 from app.services.specs import PhotoSpec, get_photo_spec
 from app.services.storage import StorageService
@@ -48,6 +50,8 @@ class PhotoProcessor:
         self.background = BackgroundService()
         self.cropper = CropperService()
         self.enhancer = EnhancerService()
+        self.matte_refiner = MatteRefineService()
+        self.output_quality = OutputQualityService()
         self.layout_service = LayoutService()
 
     async def read_upload(self, file: UploadFile) -> tuple[bytes, Image.Image]:
@@ -232,7 +236,15 @@ class PhotoProcessor:
         if self.settings.save_intermediate:
             save_image(rgba_foreground, self.storage.temp_path(task_id, 'foreground.png'))
 
-        cropped_rgba = self.cropper.crop(rgba_foreground, spec, detect_result.primary_face)
+        refined = self.matte_refiner.refine(image, rgba_foreground)
+        refined_rgba = refined.rgba
+        logger.info('Matte refined')
+        if self.settings.save_intermediate:
+            save_image(refined.alpha, self.storage.temp_path(task_id, 'refined_alpha.png'))
+            save_image(refined.trimap, self.storage.temp_path(task_id, 'trimap.png'))
+            save_image(refined_rgba, self.storage.temp_path(task_id, 'refined_foreground.png'))
+
+        cropped_rgba = self.cropper.crop(refined_rgba, spec, detect_result.primary_face)
         logger.info('Portrait cropped to target size')
         if self.settings.save_intermediate:
             save_image(cropped_rgba, self.storage.temp_path(task_id, 'cropped_rgba.png'))
@@ -242,6 +254,15 @@ class PhotoProcessor:
         if enhance:
             hd_image = self.enhancer.enhance(hd_image)
             logger.info('Enhancement applied')
+
+        output_quality = self.output_quality.evaluate(
+            source_image=image,
+            output_image=hd_image,
+            foreground_rgba=cropped_rgba,
+            face_box=detect_result.primary_face,
+            background_color=background_color,
+        )
+        logger.info('Output quality evaluated status=%s reasons=%s warnings=%s', output_quality.status, output_quality.reason_codes, output_quality.warnings)
 
         preview_image, preview_quality = self._build_preview_image(hd_image)
 
@@ -255,17 +276,30 @@ class PhotoProcessor:
         intermediate_files = None
         if self.settings.save_intermediate:
             intermediate_files = {}
-            for name in ('foreground.png', 'cropped_rgba.png'):
+            for name in ('foreground.png', 'refined_alpha.png', 'trimap.png', 'refined_foreground.png', 'cropped_rgba.png'):
                 path = self.storage.temp_path(task_id, name)
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)
 
         warnings = detect_result.warnings.copy()
+        warnings.extend(output_quality.warnings)
         detect_summary = self._build_detect_data(detect_result)
         compliance_status = self._to_compliance_status(detect_result.status)
         compliance_message = self._compliance_message(compliance_status)
         compliance_details = detect_summary.complianceDetails
-        safe_to_submit = compliance_status == 'passed'
+        if output_quality.status == 'FAIL':
+            final_quality_status = 'FAIL'
+            final_quality_message = '输出图存在明显异常，不可用于正式证件照'
+            safe_to_submit = False
+        elif detect_result.status == 'PASS' and output_quality.status == 'PASS':
+            final_quality_status = 'PASS'
+            final_quality_message = '输入与输出质量均通过，可用于正式证件照提交'
+            safe_to_submit = True
+        else:
+            final_quality_status = 'WARNING'
+            final_quality_message = '图片已生成，但仍存在质量风险，不建议直接用于正式证件照提交'
+            safe_to_submit = False
+
         preview_info = self._file_info(preview_path) if save_output else FileInfo(path='', url='')
         hd_info = self._file_info(hd_path) if save_output else FileInfo(path='', url='')
         return GenerateData(
@@ -281,15 +315,16 @@ class PhotoProcessor:
             warnings=warnings,
             detect=detect_summary,
             detectSummary=detect_summary,
-            primaryIssue=detect_result.primary_issue,
-            primaryMessage=detect_result.primary_message,
+            primaryIssue=output_quality.primary_issue or detect_result.primary_issue,
+            primaryMessage=output_quality.primary_message or detect_result.primary_message,
             secondaryWarnings=detect_result.secondary_warnings,
-            qualityStatus=detect_result.status,
-            qualityMessage=(
-                detect_result.quality_message
-                if compliance_status == 'passed'
-                else compliance_message
-            ),
+            qualityStatus=final_quality_status,
+            qualityMessage=final_quality_message,
+            outputQualityStatus=output_quality.status,
+            outputQualityMessage=output_quality.primary_message or '输出成片质量正常',
+            outputReasonCodes=output_quality.reason_codes,
+            allowPreviewSave=output_quality.status != 'FAIL',
+            allowHdSave=output_quality.status == 'PASS' and detect_result.status == 'PASS',
             previewWidth=preview_image.width,
             previewHeight=preview_image.height,
             previewFormat='JPEG',
@@ -305,6 +340,7 @@ class PhotoProcessor:
             complianceMessage=compliance_message,
             complianceDetails=compliance_details,
             safeToSubmit=safe_to_submit,
+            outputQualityMetrics=output_quality.metrics,
         )
 
     def layout_from_photo(self, photo: Image.Image, spec: PhotoSpec, paper: str) -> tuple[Image.Image, int]:
