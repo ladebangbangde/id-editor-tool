@@ -108,6 +108,8 @@ class PhotoPrecheckService:
     MOUTH_ASYMMETRY_FAIL_THRESHOLD = 0.145  # 明显歪嘴失败阈值
     TONGUE_OUT_SCORE_FAIL_THRESHOLD = 0.70
     TONGUE_OUT_SCORE_WARN_THRESHOLD = 0.48
+    MOUTH_DARK_RATIO_FAIL_THRESHOLD = 0.18
+    MOUTH_DARK_RATIO_WARN_THRESHOLD = 0.10
     EXPRESSION_NOT_NEUTRAL_FAIL_THRESHOLD = 0.70
     EXPRESSION_NOT_NEUTRAL_WARN_THRESHOLD = 0.45
 
@@ -210,7 +212,6 @@ class PhotoPrecheckService:
         return boxes
 
     def _detect_neck_accessory(self, image: Image.Image, face_box: FaceBox) -> tuple[float, dict[str, float]]:
-        cv2 = self.metrics_service._cv2()
         rgb = np.asarray(image.convert('RGB'))
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         height, width = gray.shape[:2]
@@ -406,22 +407,47 @@ class PhotoPrecheckService:
         center_x = int((mouth_left[0] + mouth_right[0]) / 2.0)
         center_y = int((upper_lip[1] + lower_lip[1]) / 2.0)
         roi_half_w = int(max(4, mouth_width * 0.26))
-        roi_h = int(max(6, mouth_width * 0.38))
+        roi_h = int(max(6, mouth_width * 0.30))
         x0 = max(0, center_x - roi_half_w)
         x1 = min(w, center_x + roi_half_w)
-        y0 = max(0, center_y)
-        y1 = min(h, center_y + roi_h)
+        y0 = max(0, int(min(upper_lip[1], lower_lip[1]) - max(2.0, mouth_open * 0.25)))
+        y1 = min(h, int(max(upper_lip[1], lower_lip[1]) + max(4.0, mouth_open * 0.95)))
 
         tongue_ratio = 0.0
+        inner_mouth_area_ratio = 0.0
+        mouth_dark_ratio = 0.0
         if x1 - x0 >= 4 and y1 - y0 >= 4:
             mouth_roi = rgb[y0:y1, x0:x1]
+            inner_lip_indices = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]
+            inner_points = []
+            for idx in inner_lip_indices:
+                px, py = self._landmark_point(face_landmarks, idx, w, h)
+                inner_points.append((int(round(px - x0)), int(round(py - y0))))
+
+            mouth_mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+            if len(inner_points) >= 3:
+                from PIL import ImageDraw
+
+                mask_img = Image.new('L', (x1 - x0, y1 - y0), 0)
+                ImageDraw.Draw(mask_img).polygon(inner_points, outline=1, fill=1)
+                mouth_mask = np.array(mask_img, dtype=np.uint8)
+                contour = np.array(inner_points, dtype=np.float32)
+                x_coords = contour[:, 0]
+                y_coords = contour[:, 1]
+                contour_area = 0.5 * abs(np.dot(x_coords, np.roll(y_coords, -1)) - np.dot(y_coords, np.roll(x_coords, -1)))
+                inner_mouth_area_ratio = contour_area / max((mouth_width * mouth_width), 1.0)
+
             r = mouth_roi[:, :, 0].astype(np.float32)
             g = mouth_roi[:, :, 1].astype(np.float32)
             b = mouth_roi[:, :, 2].astype(np.float32)
             red_dominant = (r > 95.0) & (r - np.maximum(g, b) > 12.0)
             warm_balance = (g > 45.0) & (b > 35.0)
-            tongue_mask = red_dominant & warm_balance
-            tongue_ratio = float(np.count_nonzero(tongue_mask) / max(tongue_mask.size, 1))
+            inside_mouth = mouth_mask > 0
+            tongue_mask = red_dominant & warm_balance & inside_mouth
+            tongue_ratio = float(np.count_nonzero(tongue_mask) / max(np.count_nonzero(inside_mouth), 1))
+            luma = 0.299 * r + 0.587 * g + 0.114 * b
+            dark_mask = (luma < 70.0) & inside_mouth
+            mouth_dark_ratio = float(np.count_nonzero(dark_mask) / max(np.count_nonzero(inside_mouth), 1))
 
         tongue_out_score = min(
             1.0,
@@ -442,6 +468,8 @@ class PhotoPrecheckService:
             'mouth_vertical_gap': mouth_vertical_gap,
             'mouth_width': mouth_width,
             'tongue_pixel_ratio': tongue_ratio,
+            'inner_mouth_area_ratio': float(inner_mouth_area_ratio),
+            'mouth_dark_ratio': float(mouth_dark_ratio),
             'mouth_corner_rise': float(mouth_corner_rise),
             'mouth_asymmetry': float(mouth_asymmetry),
             'tongue_out_score': float(tongue_out_score),
@@ -451,6 +479,8 @@ class PhotoPrecheckService:
         if (
             tongue_ratio >= self.TONGUE_PIXEL_RATIO_FAIL_THRESHOLD
             and mouth_open_ratio >= 0.14
+            and inner_mouth_area_ratio >= 0.035
+            and mouth_dark_ratio >= self.MOUTH_DARK_RATIO_FAIL_THRESHOLD
             and tongue_out_score >= self.TONGUE_OUT_SCORE_FAIL_THRESHOLD
         ):
             return 'tongue_out_fail', metrics
@@ -464,6 +494,9 @@ class PhotoPrecheckService:
 
         if (
             tongue_ratio >= self.TONGUE_PIXEL_RATIO_WARN_THRESHOLD
+            and mouth_open_ratio >= 0.12
+            and inner_mouth_area_ratio >= 0.020
+            and mouth_dark_ratio >= self.MOUTH_DARK_RATIO_WARN_THRESHOLD
             and tongue_out_score >= self.TONGUE_OUT_SCORE_WARN_THRESHOLD
         ):
             return 'tongue_out_warn', metrics
