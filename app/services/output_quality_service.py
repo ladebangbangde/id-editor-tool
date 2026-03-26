@@ -9,6 +9,7 @@ from skimage.color import rgb2hsv
 from skimage.measure import find_contours
 
 from app.services.photo_precheck_service import FAIL, PASS, WARNING
+from app.core.config import get_settings
 
 
 @dataclass
@@ -19,6 +20,7 @@ class OutputQualityResult:
     primary_issue: str | None = None
     primary_message: str | None = None
     metrics: dict[str, float] = field(default_factory=dict)
+    cloth_pollution_mask: Image.Image | None = None
 
 
 class OutputQualityService:
@@ -32,12 +34,15 @@ class OutputQualityService:
     EDGE_NOISE_WARN = 0.21
     FEATURE_POLLUTION_FAIL = 0.18
     FEATURE_POLLUTION_WARN = 0.10
+    CLOTH_POLLUTION_FAIL = 0.27
+    CLOTH_POLLUTION_WARN = 0.14
 
     ISSUE_PRIORITY = {
         'FACE_COLOR_POLLUTION': 100,
         'FACIAL_FEATURE_CORRUPTED': 95,
         'SKIN_TONE_ABNORMAL': 90,
         'FOREGROUND_EDGE_BROKEN': 85,
+        'CLOTH_COLOR_POLLUTION': 84,
     }
 
     ISSUE_MESSAGES = {
@@ -45,7 +50,11 @@ class OutputQualityService:
         'SKIN_TONE_ABNORMAL': '脸部肤色偏差较大，建议更换光线更均匀的照片',
         'FOREGROUND_EDGE_BROKEN': '人物边界质量异常，头发或肩部边缘存在破损风险',
         'FACIAL_FEATURE_CORRUPTED': '五官区域疑似受污染，建议重新处理或更换原图',
+        'CLOTH_COLOR_POLLUTION': '衣领/肩部检测到明显底色侵入，建议切换更稳健前景保护模式',
     }
+
+    def __init__(self) -> None:
+        self.settings = get_settings()
 
     def _cv2(self):
         try:
@@ -83,6 +92,26 @@ class OutputQualityService:
         features[fy0:fy1, fx0:fx1] = True
         return face_core, features
 
+    def _cloth_region_mask(self, face_box: dict[str, int], image_shape: tuple[int, int]) -> np.ndarray:
+        h, w = image_shape
+        x, y, fw, fh = face_box['x'], face_box['y'], face_box['width'], face_box['height']
+        mask = np.zeros((h, w), dtype=bool)
+        chest_top = int(min(h, y + fh * 0.92))
+        chest_bottom = int(min(h, y + fh * 2.25))
+        left = int(max(0, x - fw * 0.55))
+        right = int(min(w, x + fw * 1.55))
+        if chest_bottom > chest_top and right > left:
+            mask[chest_top:chest_bottom, left:right] = True
+
+        collar_top = int(min(h, y + fh * 0.70))
+        collar_bottom = int(min(h, y + fh * 1.10))
+        collar_left = int(max(0, x - fw * 0.05))
+        collar_right = int(min(w, x + fw * 1.05))
+        if collar_bottom > collar_top and collar_right > collar_left:
+            mask[collar_top:collar_bottom, collar_left:collar_right] = True
+
+        return mask
+
     def evaluate(
         self,
         source_image: Image.Image,
@@ -103,6 +132,7 @@ class OutputQualityService:
         reason_codes: list[str] = []
         warnings: list[str] = []
         metrics: dict[str, float] = {}
+        cloth_pollution_mask: Image.Image | None = None
 
         if safe_box is not None:
             face_core, features_mask = self._face_region_masks(safe_box, (h, w))
@@ -160,6 +190,31 @@ class OutputQualityService:
                 elif feature_pollution >= self.FEATURE_POLLUTION_WARN:
                     warnings.append('FACIAL_FEATURE_CORRUPTED')
 
+                if self.settings.enable_cloth_pollution_check and bg_color in {'red', 'blue'}:
+                    cloth_mask = self._cloth_region_mask(safe_box, (h, w))
+                    cloth_alpha_mask = cloth_mask & (alpha > 35)
+                    if np.any(cloth_alpha_mask):
+                        cloth_pixels = out_rgb[cloth_alpha_mask]
+                        cr = cloth_pixels[:, 0].astype(np.float32)
+                        cg = cloth_pixels[:, 1].astype(np.float32)
+                        cb = cloth_pixels[:, 2].astype(np.float32)
+                        if bg_color == 'red':
+                            contamination_strength = cr - (cg + cb) * 0.5
+                        else:
+                            contamination_strength = cb - (cr + cg) * 0.5
+                        contamination_binary = contamination_strength > 24.0
+                        pollution_ratio = float(np.mean(contamination_binary))
+                        metrics['cloth_pollution_ratio'] = pollution_ratio
+
+                        full_mask = np.zeros((h, w), dtype=np.uint8)
+                        full_mask[cloth_alpha_mask] = (contamination_binary.astype(np.uint8) * 255)
+                        cloth_pollution_mask = Image.fromarray(full_mask, mode='L')
+
+                        if pollution_ratio >= self.CLOTH_POLLUTION_FAIL:
+                            warnings.append('CLOTH_COLOR_POLLUTION')
+                        elif pollution_ratio >= self.CLOTH_POLLUTION_WARN:
+                            warnings.append('CLOTH_COLOR_POLLUTION')
+
         edge_band = (alpha > 8) & (alpha < 248)
         edge_noise = 0.0
         if np.any(edge_band):
@@ -196,6 +251,7 @@ class OutputQualityService:
                 primary_issue=primary,
                 primary_message=self.ISSUE_MESSAGES.get(primary),
                 metrics=metrics,
+                cloth_pollution_mask=cloth_pollution_mask,
             )
 
         if warnings:
@@ -207,6 +263,7 @@ class OutputQualityService:
                 primary_issue=primary,
                 primary_message=self.ISSUE_MESSAGES.get(primary),
                 metrics=metrics,
+                cloth_pollution_mask=cloth_pollution_mask,
             )
 
         return OutputQualityResult(
@@ -216,4 +273,5 @@ class OutputQualityService:
             primary_issue=None,
             primary_message='输出成片质量正常',
             metrics=metrics,
+            cloth_pollution_mask=cloth_pollution_mask,
         )
