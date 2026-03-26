@@ -180,7 +180,7 @@ class PhotoProcessor:
             raise HeadAccessoryError(message, details)
         if code == 'HAND_OCCLUSION':
             raise HandOcclusionError(message, details)
-        if code == 'EYE_OCCLUDED':
+        if code in {'EYE_OCCLUDED', 'WINK_EXPRESSION'}:
             raise EyeOccludedError(message, details)
         if code == 'FACE_OCCLUDED':
             raise FaceOccludedError(message, details)
@@ -238,19 +238,45 @@ class PhotoProcessor:
 
         refined = self.matte_refiner.refine(image, rgba_foreground)
         refined_rgba = refined.rgba
+        decontaminated_refined_rgba = refined.decontaminated_rgba
         logger.info('Matte refined')
         if self.settings.save_intermediate:
             save_image(refined.alpha, self.storage.temp_path(task_id, 'refined_alpha.png'))
             save_image(refined.trimap, self.storage.temp_path(task_id, 'trimap.png'))
             save_image(refined_rgba, self.storage.temp_path(task_id, 'refined_foreground.png'))
+            if refined.edge_band_mask is not None:
+                save_image(refined.edge_band_mask, self.storage.temp_path(task_id, 'edge_band_mask.png'))
+            if decontaminated_refined_rgba is not None:
+                save_image(decontaminated_refined_rgba, self.storage.temp_path(task_id, 'foreground_decontaminated.png'))
 
-        cropped_rgba = self.cropper.crop(refined_rgba, spec, detect_result.primary_face)
+        cropped_legacy_rgba = self.cropper.crop(refined_rgba, spec, detect_result.primary_face)
+        cropped_decontaminated_rgba = None
+        if self.settings.enable_foreground_decontamination and decontaminated_refined_rgba is not None:
+            cropped_decontaminated_rgba = self.cropper.crop(decontaminated_refined_rgba, spec, detect_result.primary_face)
+        use_decontaminated_output = bool(
+            self.settings.enable_decontaminated_output_as_default
+            and self.settings.enable_foreground_decontamination
+            and cropped_decontaminated_rgba is not None
+        )
+        cropped_rgba = cropped_decontaminated_rgba if use_decontaminated_output else cropped_legacy_rgba
         logger.info('Portrait cropped to target size')
         if self.settings.save_intermediate:
             save_image(cropped_rgba, self.storage.temp_path(task_id, 'cropped_rgba.png'))
+            save_image(cropped_legacy_rgba, self.storage.temp_path(task_id, 'cropped_rgba_legacy.png'))
+            if cropped_decontaminated_rgba is not None:
+                save_image(cropped_decontaminated_rgba, self.storage.temp_path(task_id, 'cropped_rgba_decontaminated.png'))
 
-        hd_image = self.background.apply(cropped_rgba, background_color)
+        hd_image_legacy = self.background.apply(cropped_legacy_rgba, background_color)
+        hd_image = hd_image_legacy
+        hd_image_decontaminated = None
+        if cropped_decontaminated_rgba is not None:
+            hd_image_decontaminated = self.background.apply_edge_aware(cropped_decontaminated_rgba, background_color)
+            if use_decontaminated_output:
+                hd_image = hd_image_decontaminated
         logger.info('Background applied')
+        if self.settings.save_intermediate and hd_image_decontaminated is not None:
+            save_image(hd_image_legacy, self.storage.temp_path(task_id, 'hd_legacy.png'))
+            save_image(hd_image_decontaminated, self.storage.temp_path(task_id, 'hd_decontaminated.png'))
         if enhance:
             hd_image = self.enhancer.enhance(hd_image)
             logger.info('Enhancement applied')
@@ -275,8 +301,23 @@ class PhotoProcessor:
 
         intermediate_files = None
         if self.settings.save_intermediate:
+            if output_quality.cloth_pollution_mask is not None:
+                save_image(output_quality.cloth_pollution_mask, self.storage.temp_path(task_id, 'cloth_pollution_mask.png'))
             intermediate_files = {}
-            for name in ('foreground.png', 'refined_alpha.png', 'trimap.png', 'refined_foreground.png', 'cropped_rgba.png'):
+            for name in (
+                'foreground.png',
+                'refined_alpha.png',
+                'trimap.png',
+                'refined_foreground.png',
+                'foreground_decontaminated.png',
+                'edge_band_mask.png',
+                'cropped_rgba.png',
+                'cropped_rgba_legacy.png',
+                'cropped_rgba_decontaminated.png',
+                'hd_legacy.png',
+                'hd_decontaminated.png',
+                'cloth_pollution_mask.png',
+            ):
                 path = self.storage.temp_path(task_id, name)
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)

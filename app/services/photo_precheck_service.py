@@ -69,6 +69,7 @@ class PhotoPrecheckService:
         'MOUTH_OPEN': '检测到明显张嘴',
         'SMILE_TOO_BROAD': '笑容幅度过大',
         'MOUTH_ASYMMETRY': '嘴部明显歪斜',
+        'WINK_EXPRESSION': '检测到明显挤眼/搞怪表情',
     }
 
     ISSUE_PRIORITY = {
@@ -80,6 +81,7 @@ class PhotoPrecheckService:
         'MOUTH_OPEN': 90,
         'SMILE_TOO_BROAD': 89,
         'MOUTH_ASYMMETRY': 88,
+        'WINK_EXPRESSION': 92,
         'EXAGGERATED_EXPRESSION': 91,
         'SEVERE_POSE': 80,
         'HEAD_SHOULDER_INCOMPLETE': 78,
@@ -112,6 +114,8 @@ class PhotoPrecheckService:
     MOUTH_DARK_RATIO_WARN_THRESHOLD = 0.10
     EXPRESSION_NOT_NEUTRAL_FAIL_THRESHOLD = 0.70
     EXPRESSION_NOT_NEUTRAL_WARN_THRESHOLD = 0.45
+    WINK_INTENSITY_FAIL_THRESHOLD = 0.72
+    WINK_INTENSITY_WARN_THRESHOLD = 0.48
 
     QUALITY_MESSAGES = {
         PASS: '照片质量良好，可直接进入处理流程',
@@ -513,6 +517,81 @@ class PhotoPrecheckService:
             return 'expression_warn', metrics
         return 'neutral', metrics
 
+    def _detect_wink_expression(
+        self,
+        image: Image.Image,
+        face_box: FaceBox,
+        eye_metrics: dict[str, float],
+        expression_metrics: dict[str, float],
+    ) -> tuple[str, dict[str, float]]:
+        rgb = np.asarray(image.convert('RGB'))
+        h, w = rgb.shape[:2]
+        try:
+            detector = self._face_mesh_detector()
+            result = detector.process(rgb)
+        except Exception as exc:
+            logger.warning('wink expression mesh unavailable: %s', exc)
+            return 'unknown', {}
+        if not result.multi_face_landmarks:
+            return 'unknown', {}
+
+        face_landmarks = result.multi_face_landmarks[0]
+        left_eye = eye_metrics.get('left_eye_ear', 0.0)
+        right_eye = eye_metrics.get('right_eye_ear', 0.0)
+        eye_asym = eye_metrics.get('eye_asymmetry', abs(left_eye - right_eye))
+        min_eye = min(left_eye, right_eye)
+        max_eye = max(left_eye, right_eye)
+        one_eye_closed_strength = np.clip((self.EYE_ASPECT_WARN_THRESHOLD - min_eye) / max(self.EYE_ASPECT_WARN_THRESHOLD, 1e-6), 0.0, 1.0)
+        asym_strength = np.clip(eye_asym / max(self.EYE_ASYMMETRY_FAIL_THRESHOLD, 1e-6), 0.0, 1.0)
+
+        nose_left = self._landmark_point(face_landmarks, 48, w, h)
+        nose_right = self._landmark_point(face_landmarks, 278, w, h)
+        nose_bridge = self._landmark_point(face_landmarks, 6, w, h)
+        nose_tip = self._landmark_point(face_landmarks, 1, w, h)
+        left_cheek = self._landmark_point(face_landmarks, 187, w, h)
+        right_cheek = self._landmark_point(face_landmarks, 411, w, h)
+        mouth_left = self._landmark_point(face_landmarks, 61, w, h)
+        mouth_right = self._landmark_point(face_landmarks, 291, w, h)
+
+        nose_width = float(np.linalg.norm(np.array(nose_left) - np.array(nose_right)))
+        bridge_to_tip = float(np.linalg.norm(np.array(nose_bridge) - np.array(nose_tip)))
+        nose_squeeze = np.clip((bridge_to_tip / max(nose_width, 1.0) - 0.45) / 0.35, 0.0, 1.0)
+
+        cheek_gap = float(np.linalg.norm(np.array(left_cheek) - np.array(right_cheek)))
+        mouth_width = float(np.linalg.norm(np.array(mouth_left) - np.array(mouth_right)))
+        cheek_compress = np.clip((mouth_width / max(cheek_gap, 1.0) - 0.28) / 0.18, 0.0, 1.0)
+
+        mouth_asym = abs(expression_metrics.get('mouth_asymmetry', 0.0))
+        mouth_asym_strength = np.clip(mouth_asym / max(self.MOUTH_ASYMMETRY_WARN_THRESHOLD, 1e-6), 0.0, 1.0)
+
+        wink_score = float(
+            min(
+                1.0,
+                0.40 * one_eye_closed_strength
+                + 0.28 * asym_strength
+                + 0.18 * nose_squeeze
+                + 0.09 * cheek_compress
+                + 0.05 * mouth_asym_strength,
+            )
+        )
+        metrics = {
+            'wink_score': wink_score,
+            'wink_eye_strength': float(one_eye_closed_strength),
+            'wink_asym_strength': float(asym_strength),
+            'wink_nose_squeeze': float(nose_squeeze),
+            'wink_cheek_compress': float(cheek_compress),
+        }
+        if (
+            wink_score >= self.WINK_INTENSITY_FAIL_THRESHOLD
+            and min_eye <= self.EYE_ASPECT_WARN_THRESHOLD
+            and eye_asym >= self.EYE_ASYMMETRY_WARN_THRESHOLD
+            and max_eye >= self.EYE_ASPECT_WARN_THRESHOLD
+        ):
+            return 'wink_fail', metrics
+        if wink_score >= self.WINK_INTENSITY_WARN_THRESHOLD:
+            return 'wink_warn', metrics
+        return 'neutral', metrics
+
     def _select_primary_issue(self, issues: list[PrecheckIssue]) -> PrecheckIssue | None:
         if not issues:
             return None
@@ -622,6 +701,16 @@ class PhotoPrecheckService:
                     self._append_issue(issues, 'MOUTH_ASYMMETRY', '嘴部轻微不对称，建议放松后保持正面重拍', WARNING)
                 else:
                     self._append_issue(issues, 'SMILE_TOO_BROAD', '笑意稍明显，建议表情更中性以提升证件照通过率', WARNING)
+
+            wink_state, wink_metrics = self._detect_wink_expression(image, face_box, eye_metrics=eye_metrics, expression_metrics=expression_metrics)
+            metrics.update(wink_metrics)
+            if wink_state == 'wink_fail':
+                if self.settings.enable_wink_hard_fail:
+                    self._append_issue(issues, 'WINK_EXPRESSION', '检测到明显单眼搞怪/挤眉弄眼表情，不符合证件照规范', FAIL)
+                else:
+                    self._append_issue(issues, 'WINK_EXPRESSION', '检测到明显单眼搞怪/挤眉弄眼风险，建议自然表情重拍', WARNING)
+            elif wink_state == 'wink_warn':
+                self._append_issue(issues, 'WINK_EXPRESSION', '检测到疑似单眼挤压表情，建议双眼自然睁开重拍', WARNING)
 
             jewelry_conf, jewelry_metrics = self._detect_neck_accessory(image, face_box)
             metrics.update(jewelry_metrics)
