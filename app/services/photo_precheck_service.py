@@ -212,6 +212,7 @@ class PhotoPrecheckService:
         return boxes
 
     def _detect_neck_accessory(self, image: Image.Image, face_box: FaceBox) -> tuple[float, dict[str, float]]:
+        cv2 = self.metrics_service._cv2()
         rgb = np.asarray(image.convert('RGB'))
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         height, width = gray.shape[:2]
