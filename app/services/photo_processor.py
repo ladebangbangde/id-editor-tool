@@ -244,6 +244,8 @@ class PhotoProcessor:
             save_image(refined.alpha, self.storage.temp_path(task_id, 'refined_alpha.png'))
             save_image(refined.trimap, self.storage.temp_path(task_id, 'trimap.png'))
             save_image(refined_rgba, self.storage.temp_path(task_id, 'refined_foreground.png'))
+            if refined.guided_alpha is not None:
+                save_image(refined.guided_alpha, self.storage.temp_path(task_id, 'guided_alpha.png'))
             if refined.edge_band_mask is not None:
                 save_image(refined.edge_band_mask, self.storage.temp_path(task_id, 'edge_band_mask.png'))
             if decontaminated_refined_rgba is not None:
@@ -253,11 +255,10 @@ class PhotoProcessor:
         cropped_decontaminated_rgba = None
         if self.settings.enable_foreground_decontamination and decontaminated_refined_rgba is not None:
             cropped_decontaminated_rgba = self.cropper.crop(decontaminated_refined_rgba, spec, detect_result.primary_face)
-        use_decontaminated_output = bool(
-            self.settings.enable_decontaminated_output_as_default
-            and self.settings.enable_foreground_decontamination
-            and cropped_decontaminated_rgba is not None
-        )
+        use_decontaminated_output = cropped_decontaminated_rgba is not None
+        if not self.settings.enable_decontaminated_output_as_default and cropped_decontaminated_rgba is not None:
+            logger.warning('decontaminated default output disabled by rollback switch ENABLE_DECONTAMINATED_OUTPUT_AS_DEFAULT=false')
+            use_decontaminated_output = False
         cropped_rgba = cropped_decontaminated_rgba if use_decontaminated_output else cropped_legacy_rgba
         logger.info('Portrait cropped to target size')
         if self.settings.save_intermediate:
@@ -267,18 +268,24 @@ class PhotoProcessor:
                 save_image(cropped_decontaminated_rgba, self.storage.temp_path(task_id, 'cropped_rgba_decontaminated.png'))
 
         hd_image_legacy = self.background.apply(cropped_legacy_rgba, background_color)
-        hd_image = hd_image_legacy
+        hd_image_legacy_final = hd_image_legacy
+        hd_image = hd_image_legacy_final
         hd_image_decontaminated = None
+        hd_image_decontaminated_final = None
         if cropped_decontaminated_rgba is not None:
             hd_image_decontaminated = self.background.apply_edge_aware(cropped_decontaminated_rgba, background_color)
+            hd_image_decontaminated_final = hd_image_decontaminated
             if use_decontaminated_output:
-                hd_image = hd_image_decontaminated
+                hd_image = hd_image_decontaminated_final
         logger.info('Background applied')
         if self.settings.save_intermediate and hd_image_decontaminated is not None:
             save_image(hd_image_legacy, self.storage.temp_path(task_id, 'hd_legacy.png'))
             save_image(hd_image_decontaminated, self.storage.temp_path(task_id, 'hd_decontaminated.png'))
         if enhance:
-            hd_image = self.enhancer.enhance(hd_image)
+            hd_image_legacy_final = self.enhancer.enhance(hd_image_legacy_final)
+            if hd_image_decontaminated_final is not None:
+                hd_image_decontaminated_final = self.enhancer.enhance(hd_image_decontaminated_final)
+            hd_image = hd_image_decontaminated_final if (use_decontaminated_output and hd_image_decontaminated_final is not None) else hd_image_legacy_final
             logger.info('Enhancement applied')
 
         output_quality = self.output_quality.evaluate(
@@ -288,6 +295,32 @@ class PhotoProcessor:
             face_box=detect_result.primary_face,
             background_color=background_color,
         )
+        if hd_image_decontaminated is not None:
+            legacy_quality = self.output_quality.evaluate(
+                source_image=image,
+                output_image=hd_image_legacy_final,
+                foreground_rgba=cropped_legacy_rgba,
+                face_box=detect_result.primary_face,
+                background_color=background_color,
+            )
+            severity_rank = {'PASS': 0, 'WARNING': 1, 'FAIL': 2}
+            cloth_fail_decontaminated = 'CLOTH_COLOR_POLLUTION' in output_quality.reason_codes
+            cloth_fail_legacy = 'CLOTH_COLOR_POLLUTION' in legacy_quality.reason_codes
+            fallback_to_legacy = (
+                severity_rank.get(output_quality.status, 2) > severity_rank.get(legacy_quality.status, 2)
+                or (cloth_fail_decontaminated and not cloth_fail_legacy)
+            )
+            if fallback_to_legacy:
+                logger.warning(
+                    'Auto fallback to legacy output due to degraded decontaminated quality decontaminated=%s legacy=%s',
+                    output_quality.status,
+                    legacy_quality.status,
+                )
+                hd_image = hd_image_legacy
+                if enhance:
+                    hd_image = hd_image_legacy_final
+                cropped_rgba = cropped_legacy_rgba
+                output_quality = legacy_quality
         logger.info('Output quality evaluated status=%s reasons=%s warnings=%s', output_quality.status, output_quality.reason_codes, output_quality.warnings)
 
         preview_image, preview_quality = self._build_preview_image(hd_image)
@@ -310,6 +343,7 @@ class PhotoProcessor:
                 'trimap.png',
                 'refined_foreground.png',
                 'foreground_decontaminated.png',
+                'guided_alpha.png',
                 'edge_band_mask.png',
                 'cropped_rgba.png',
                 'cropped_rgba_legacy.png',
