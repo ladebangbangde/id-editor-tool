@@ -50,13 +50,13 @@ def test_output_quality_pass_for_clean_output() -> None:
     assert result.reason_codes == []
 
 
-def test_output_quality_detects_cloth_color_pollution_warning() -> None:
+def test_output_quality_cloth_pollution_low_risk_can_pass() -> None:
     service = OutputQualityService()
     service.settings.enable_cloth_pollution_check = True
     src = Image.new('RGB', (220, 280), (210, 205, 200))
     out = np.zeros((280, 220, 3), dtype=np.uint8)
     out[:, :] = (210, 205, 200)
-    out[150:260, 40:190] = (80, 80, 250)
+    out[180:230, 85:135] = (150, 160, 235)
     output = Image.fromarray(out, mode='RGB')
     fg = _solid_rgba(220, 280, alpha=255)
 
@@ -68,4 +68,27 @@ def test_output_quality_detects_cloth_color_pollution_warning() -> None:
         background_color='blue',
     )
 
-    assert 'CLOTH_COLOR_POLLUTION' in result.warnings
+    assert result.status == 'PASS'
+    assert 'CLOTH_COLOR_POLLUTION' not in result.warnings
+
+
+def test_output_quality_detects_cloth_color_pollution_fail() -> None:
+    service = OutputQualityService()
+    service.settings.enable_cloth_pollution_check = True
+    src = Image.new('RGB', (220, 280), (220, 215, 210))
+    out = np.zeros((280, 220, 3), dtype=np.uint8)
+    out[:, :] = (220, 215, 210)
+    out[130:275, 20:210] = (230, 40, 40)
+    output = Image.fromarray(out, mode='RGB')
+    fg = _solid_rgba(220, 280, alpha=255)
+
+    result = service.evaluate(
+        source_image=src,
+        output_image=output,
+        foreground_rgba=fg,
+        face_box={'x': 70, 'y': 45, 'width': 80, 'height': 105},
+        background_color='red',
+    )
+
+    assert result.status == 'FAIL'
+    assert 'CLOTH_COLOR_POLLUTION' in result.reason_codes

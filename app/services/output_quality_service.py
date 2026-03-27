@@ -220,7 +220,7 @@ class OutputQualityService:
                         high_risk = pollution_ratio >= self.CLOTH_POLLUTION_FAIL or (pollution_ratio >= self.CLOTH_POLLUTION_WARN and cloth_color_shift > 28.0 and light_cloth_ratio > 0.35)
                         medium_risk = pollution_ratio >= self.CLOTH_POLLUTION_WARN or (cloth_color_shift > 18.0 and light_cloth_ratio > 0.35)
                         if high_risk:
-                            warnings.append('CLOTH_COLOR_POLLUTION')
+                            reason_codes.append('CLOTH_COLOR_POLLUTION')
                         elif medium_risk:
                             warnings.append('CLOTH_COLOR_POLLUTION')
 

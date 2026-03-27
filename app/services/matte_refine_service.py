@@ -71,6 +71,7 @@ class MatteRefineService:
 
     def _guided_refine_alpha(self, source_rgb: np.ndarray, alpha_refined: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
         if not self.settings.enable_guided_edge_refinement:
+            logger.warning('guided edge refinement disabled by rollback switch ENABLE_GUIDED_EDGE_REFINEMENT=false')
             return alpha_refined, None
         cv2 = self._cv2()
         if cv2 is None or not hasattr(cv2, 'ximgproc'):
@@ -199,6 +200,8 @@ class MatteRefineService:
                 alpha_refined=alpha_refined,
                 edge_band_mask=edge_band_mask,
             )
+        else:
+            logger.warning('foreground decontamination disabled by rollback switch ENABLE_FOREGROUND_DECONTAMINATION=false')
 
         return MatteRefineResult(
             rgba=Image.fromarray(refined_rgba, mode='RGBA'),
