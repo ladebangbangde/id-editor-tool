@@ -250,6 +250,8 @@ class PhotoProcessor:
                 save_image(refined.hair_internal_holes_mask, self.storage.temp_path(task_id, 'hair_internal_holes_mask.png'))
             if refined.hair_gap_filled_alpha is not None:
                 save_image(refined.hair_gap_filled_alpha, self.storage.temp_path(task_id, 'hair_gap_filled_alpha.png'))
+            if refined.border_residue_mask is not None:
+                save_image(refined.border_residue_mask, self.storage.temp_path(task_id, 'border_residue_mask.png'))
             if refined.edge_band_mask is not None:
                 save_image(refined.edge_band_mask, self.storage.temp_path(task_id, 'edge_band_mask.png'))
             if decontaminated_refined_rgba is not None:
@@ -354,6 +356,7 @@ class PhotoProcessor:
                 'guided_alpha.png',
                 'hair_internal_holes_mask.png',
                 'hair_gap_filled_alpha.png',
+                'border_residue_mask.png',
                 'hair_gap_fixed_output.png',
                 'edge_band_mask.png',
                 'cropped_rgba.png',
@@ -367,6 +370,11 @@ class PhotoProcessor:
                 path = self.storage.temp_path(task_id, name)
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)
+            if intermediate_files:
+                logger.warning('================ INTERMEDIATE ARTIFACTS (task_id=%s) ================', task_id)
+                for name, file_info in intermediate_files.items():
+                    logger.warning('INTERMEDIATE %-30s path=%s url=%s', name, file_info.path, file_info.url)
+                logger.warning('================ END INTERMEDIATE ARTIFACTS (task_id=%s) ============', task_id)
 
         warnings = detect_result.warnings.copy()
         warnings.extend(output_quality.warnings)
