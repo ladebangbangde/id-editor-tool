@@ -30,6 +30,7 @@ class LegacyPhotoGenerationEngine(PhotoGenerationEngine):
 
         preview_image, preview_quality = self.preview_builder(hd_image)
 
+        segmentation_debug = self.segmenter.consume_debug_images() if hasattr(self.segmenter, 'consume_debug_images') else {}
         debug_images: dict[str, Image.Image] = {
             'foreground.png': rgba_foreground,
             'refined_alpha.png': refined.alpha,
@@ -39,6 +40,9 @@ class LegacyPhotoGenerationEngine(PhotoGenerationEngine):
             'legacy_hd.png': hd_image,
             'legacy_preview.jpg': preview_image,
         }
+        for name, debug_image in segmentation_debug.items():
+            debug_images[name] = debug_image
+
         if refined.decontaminated_rgba is not None:
             debug_images['foreground_decontaminated.png'] = refined.decontaminated_rgba
         if refined.guided_alpha is not None:

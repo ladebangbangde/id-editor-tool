@@ -42,6 +42,8 @@ class OutputQualityService:
     HAIR_GAP_RESIDUE_WARN = 0.004
     BORDER_RESIDUE_FAIL = 0.22
     BORDER_RESIDUE_WARN = 0.10
+    EDGE_FAST_SKIP_RATIO = 0.0012
+    HAIR_FAST_SKIP_BRIGHT_RATIO = 0.0008
 
     ISSUE_PRIORITY = {
         'FACE_COLOR_POLLUTION': 100,
@@ -54,14 +56,30 @@ class OutputQualityService:
     }
 
     ISSUE_MESSAGES = {
-        'FACE_COLOR_POLLUTION': '脸部检测到明显底色串色，请更换干净背景重试',
-        'SKIN_TONE_ABNORMAL': '脸部肤色偏差较大，建议更换光线更均匀的照片',
-        'FOREGROUND_EDGE_BROKEN': '人物边界质量异常，头发或肩部边缘存在破损风险',
-        'FACIAL_FEATURE_CORRUPTED': '五官区域疑似受污染，建议重新处理或更换原图',
-        'CLOTH_COLOR_POLLUTION': '衣领/肩部检测到明显底色侵入，建议切换更稳健前景保护模式',
-        'HAIR_GAP_BACKGROUND_RESIDUE': '头发内部细缝存在漏底残留，建议使用更干净原图或重新抠图',
-        'BORDER_BACKGROUND_RESIDUE': '画面边缘仍残留原始背景，背景替换不完整',
+        'FACE_COLOR_POLLUTION': '脸部颜色存在轻微异常，建议确认后再保存',
+        'SKIN_TONE_ABNORMAL': '肤色表现不够自然，建议更换光线更均匀的照片',
+        'FOREGROUND_EDGE_BROKEN': '人物边缘不够自然，建议确认后再使用',
+        'FACIAL_FEATURE_CORRUPTED': '五官区域有轻微异常，建议放大检查',
+        'CLOTH_COLOR_POLLUTION': '衣领或肩部区域有少量底色影响，建议放大查看',
+        'HAIR_GAP_BACKGROUND_RESIDUE': '头发局部边缘仍有细小背景残留，建议确认效果',
+        'BORDER_BACKGROUND_RESIDUE': '画面边缘有少量背景残留，建议确认后再保存',
     }
+
+
+    @classmethod
+    def user_message_for_issue(cls, code: str | None) -> str | None:
+        if not code:
+            return None
+        return cls.ISSUE_MESSAGES.get(code)
+
+    @classmethod
+    def user_messages_for_issues(cls, codes: list[str]) -> list[str]:
+        messages: list[str] = []
+        for code in codes:
+            message = cls.user_message_for_issue(code)
+            if message and message not in messages:
+                messages.append(message)
+        return messages
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -249,8 +267,15 @@ class OutputQualityService:
                     else:
                         sat = rgb2hsv(out_rgb.astype(np.float32) / 255.0)[:, :, 1].astype(np.float32)
 
+                    hair_patch = hair_region[hair_top:hair_bottom, hair_left:hair_right]
                     bright_low_sat = (np.mean(hair_rgb, axis=2) > 214.0) & (sat < 0.16)
-                    candidate = hair_region & bright_low_sat
+                    candidate_patch = bright_low_sat[hair_top:hair_bottom, hair_left:hair_right] & hair_patch
+                    if float(np.mean(candidate_patch)) < self.HAIR_FAST_SKIP_BRIGHT_RATIO:
+                        metrics['hair_gap_residue_ratio'] = 0.0
+                        candidate = np.zeros((h, w), dtype=bool)
+                    else:
+                        candidate = np.zeros((h, w), dtype=bool)
+                        candidate[hair_top:hair_bottom, hair_left:hair_right] = candidate_patch
                     labels = measure.label(candidate, connectivity=2)
                     residue_mask = np.zeros((h, w), dtype=np.uint8)
                     for region in measure.regionprops(labels):
@@ -302,7 +327,9 @@ class OutputQualityService:
 
         edge_band = (alpha > 8) & (alpha < 248)
         edge_noise = 0.0
-        if np.any(edge_band):
+        edge_ratio = float(np.mean(edge_band))
+        metrics['edge_band_ratio'] = edge_ratio
+        if np.any(edge_band) and edge_ratio >= self.EDGE_FAST_SKIP_RATIO:
             region = edge_band.astype(bool)
             if cv2 is not None:
                 edge_u8 = region.astype(np.uint8)
@@ -323,6 +350,8 @@ class OutputQualityService:
                 reason_codes.append('FOREGROUND_EDGE_BROKEN')
             elif edge_noise >= self.EDGE_NOISE_WARN:
                 warnings.append('FOREGROUND_EDGE_BROKEN')
+        elif np.any(edge_band):
+            metrics['edge_noise_score'] = 0.0
 
         reason_codes = sorted(set(reason_codes), key=lambda code: -self.ISSUE_PRIORITY.get(code, 0))
         warnings = sorted(set(warnings), key=lambda code: -self.ISSUE_PRIORITY.get(code, 0))

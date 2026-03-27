@@ -140,3 +140,13 @@ def test_output_quality_detects_border_background_residue() -> None:
     )
 
     assert 'BORDER_BACKGROUND_RESIDUE' in result.reason_codes
+
+
+def test_output_quality_user_message_mapping() -> None:
+    assert OutputQualityService.user_message_for_issue('FACE_COLOR_POLLUTION') == '脸部颜色存在轻微异常，建议确认后再保存'
+    assert OutputQualityService.user_messages_for_issues(
+        ['FACE_COLOR_POLLUTION', 'CLOTH_COLOR_POLLUTION', 'UNKNOWN_CODE']
+    ) == [
+        '脸部颜色存在轻微异常，建议确认后再保存',
+        '衣领或肩部区域有少量底色影响，建议放大查看',
+    ]
