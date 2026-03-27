@@ -40,6 +40,8 @@ class OutputQualityService:
     CLOTH_POLLUTION_WARN = 0.14
     HAIR_GAP_RESIDUE_FAIL = 0.010
     HAIR_GAP_RESIDUE_WARN = 0.004
+    BORDER_RESIDUE_FAIL = 0.22
+    BORDER_RESIDUE_WARN = 0.10
 
     ISSUE_PRIORITY = {
         'FACE_COLOR_POLLUTION': 100,
@@ -48,6 +50,7 @@ class OutputQualityService:
         'FOREGROUND_EDGE_BROKEN': 85,
         'CLOTH_COLOR_POLLUTION': 84,
         'HAIR_GAP_BACKGROUND_RESIDUE': 83,
+        'BORDER_BACKGROUND_RESIDUE': 82,
     }
 
     ISSUE_MESSAGES = {
@@ -57,6 +60,7 @@ class OutputQualityService:
         'FACIAL_FEATURE_CORRUPTED': '五官区域疑似受污染，建议重新处理或更换原图',
         'CLOTH_COLOR_POLLUTION': '衣领/肩部检测到明显底色侵入，建议切换更稳健前景保护模式',
         'HAIR_GAP_BACKGROUND_RESIDUE': '头发内部细缝存在漏底残留，建议使用更干净原图或重新抠图',
+        'BORDER_BACKGROUND_RESIDUE': '画面边缘仍残留原始背景，背景替换不完整',
     }
 
     def __init__(self) -> None:
@@ -270,6 +274,31 @@ class OutputQualityService:
                             reason_codes.append('HAIR_GAP_BACKGROUND_RESIDUE')
                         elif hair_gap_ratio >= self.HAIR_GAP_RESIDUE_WARN:
                             warnings.append('HAIR_GAP_BACKGROUND_RESIDUE')
+
+                if bg_color in {'red', 'blue'}:
+                    strip = max(4, min(h, w) // 20)
+                    border_mask = np.zeros((h, w), dtype=bool)
+                    border_mask[:strip, :] = True
+                    border_mask[-strip:, :] = True
+                    border_mask[:, :strip] = True
+                    border_mask[:, -strip:] = True
+
+                    border_pixels = out_rgb[border_mask]
+                    if border_pixels.size > 0:
+                        if bg_color == 'blue':
+                            target = np.array([67.0, 142.0, 219.0], dtype=np.float32)
+                        else:
+                            target = np.array([230.0, 50.0, 55.0], dtype=np.float32)
+                        pixel_f = border_pixels.astype(np.float32)
+                        bright = np.mean(pixel_f, axis=1) > 205.0
+                        low_sat = (np.max(pixel_f, axis=1) - np.min(pixel_f, axis=1)) < 25.0
+                        target_dist = np.linalg.norm(pixel_f - target[None, :], axis=1)
+                        residue_ratio = float(np.mean(bright & low_sat & (target_dist > 55.0)))
+                        metrics['border_background_residue_ratio'] = residue_ratio
+                        if residue_ratio >= self.BORDER_RESIDUE_FAIL:
+                            reason_codes.append('BORDER_BACKGROUND_RESIDUE')
+                        elif residue_ratio >= self.BORDER_RESIDUE_WARN:
+                            warnings.append('BORDER_BACKGROUND_RESIDUE')
 
         edge_band = (alpha > 8) & (alpha < 248)
         edge_noise = 0.0

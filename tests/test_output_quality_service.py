@@ -119,3 +119,24 @@ def test_output_quality_detects_hair_gap_background_residue() -> None:
     )
 
     assert 'HAIR_GAP_BACKGROUND_RESIDUE' in (result.reason_codes + result.warnings)
+
+
+def test_output_quality_detects_border_background_residue() -> None:
+    service = OutputQualityService()
+    src = Image.new('RGB', (220, 280), (240, 240, 240))
+    out = np.zeros((280, 220, 3), dtype=np.uint8)
+    out[:, :] = (67, 142, 219)
+    out[:, :20] = (245, 245, 245)
+    out[:, -20:] = (245, 245, 245)
+    output = Image.fromarray(out, mode='RGB')
+    fg = _solid_rgba(220, 280, alpha=255)
+
+    result = service.evaluate(
+        source_image=src,
+        output_image=output,
+        foreground_rgba=fg,
+        face_box={'x': 70, 'y': 65, 'width': 80, 'height': 110},
+        background_color='blue',
+    )
+
+    assert 'BORDER_BACKGROUND_RESIDUE' in result.reason_codes

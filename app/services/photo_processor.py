@@ -250,6 +250,8 @@ class PhotoProcessor:
                 save_image(refined.hair_internal_holes_mask, self.storage.temp_path(task_id, 'hair_internal_holes_mask.png'))
             if refined.hair_gap_filled_alpha is not None:
                 save_image(refined.hair_gap_filled_alpha, self.storage.temp_path(task_id, 'hair_gap_filled_alpha.png'))
+            if refined.border_residue_mask is not None:
+                save_image(refined.border_residue_mask, self.storage.temp_path(task_id, 'border_residue_mask.png'))
             if refined.edge_band_mask is not None:
                 save_image(refined.edge_band_mask, self.storage.temp_path(task_id, 'edge_band_mask.png'))
             if decontaminated_refined_rgba is not None:
@@ -354,6 +356,7 @@ class PhotoProcessor:
                 'guided_alpha.png',
                 'hair_internal_holes_mask.png',
                 'hair_gap_filled_alpha.png',
+                'border_residue_mask.png',
                 'hair_gap_fixed_output.png',
                 'edge_band_mask.png',
                 'cropped_rgba.png',

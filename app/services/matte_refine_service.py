@@ -22,6 +22,7 @@ class MatteRefineResult:
     guided_alpha: Image.Image | None = None
     hair_internal_holes_mask: Image.Image | None = None
     hair_gap_filled_alpha: Image.Image | None = None
+    border_residue_mask: Image.Image | None = None
 
 
 class MatteRefineService:
@@ -41,6 +42,8 @@ class MatteRefineService:
     EDGE_PROPAGATION_BLEND = 0.45
     HAIR_HOLE_MAX_AREA_RATIO = 0.0018
     HAIR_HOLE_MIN_AREA = 3
+    BORDER_RESIDUE_COLOR_DIST = 0.16
+    BORDER_RESIDUE_MIN_AREA_RATIO = 0.0025
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -175,6 +178,45 @@ class MatteRefineService:
             alpha[holes] = 0.0
         return alpha
 
+    def _detect_border_background_residue(
+        self,
+        source_rgb: np.ndarray,
+        fg_rgb: np.ndarray,
+        alpha_refined: np.ndarray,
+    ) -> np.ndarray:
+        h, w = alpha_refined.shape
+        alpha = np.clip(alpha_refined.astype(np.float32), 0.0, 1.0)
+        border_strip = max(3, min(h, w) // 18)
+        border_samples = np.concatenate(
+            [
+                source_rgb[:border_strip, :, :].reshape(-1, 3),
+                source_rgb[-border_strip:, :, :].reshape(-1, 3),
+                source_rgb[:, :border_strip, :].reshape(-1, 3),
+                source_rgb[:, -border_strip:, :].reshape(-1, 3),
+            ],
+            axis=0,
+        )
+        bg_color = np.median(border_samples, axis=0)
+        color_dist = np.linalg.norm(fg_rgb - bg_color[None, None, :], axis=2)
+        candidate = color_dist < self.BORDER_RESIDUE_COLOR_DIST
+
+        labels = measure.label(candidate, connectivity=2)
+        min_area = max(18, int(h * w * self.BORDER_RESIDUE_MIN_AREA_RATIO))
+        residue = np.zeros((h, w), dtype=np.float32)
+        for region in measure.regionprops(labels):
+            if region.area < min_area:
+                continue
+            minr, minc, maxr, maxc = region.bbox
+            touches_border = minr == 0 or minc == 0 or maxr == h or maxc == w
+            if not touches_border:
+                continue
+            comp = labels == region.label
+            mean_alpha = float(np.mean(alpha[comp]))
+            if mean_alpha > 0.985:
+                continue
+            residue[comp] = 1.0
+        return residue
+
     def _decontaminate_foreground_rgb(
         self,
         source_rgb: np.ndarray,
@@ -241,8 +283,18 @@ class MatteRefineService:
         alpha_refined = self._postprocess_alpha(alpha_refined)
         alpha_refined, guided_alpha_debug = self._guided_refine_alpha(source_rgb=rgb, alpha_refined=alpha_refined)
 
-        hair_holes_mask = self._detect_hair_internal_holes(source_rgb=rgb, alpha_refined=alpha_refined)
-        alpha_refined_filled = self._fill_hair_gap_background(alpha_refined=alpha_refined, hair_holes_mask=hair_holes_mask)
+        fg_rgb = fg_rgba_np[:, :, :3].astype(np.float32) / 255.0
+        border_residue_mask = self._detect_border_background_residue(
+            source_rgb=rgb,
+            fg_rgb=fg_rgb,
+            alpha_refined=alpha_refined,
+        )
+        alpha_refined_border_cleaned = alpha_refined.copy()
+        if np.any(border_residue_mask > 0.5):
+            alpha_refined_border_cleaned[border_residue_mask > 0.5] = 0.0
+
+        hair_holes_mask = self._detect_hair_internal_holes(source_rgb=rgb, alpha_refined=alpha_refined_border_cleaned)
+        alpha_refined_filled = self._fill_hair_gap_background(alpha_refined=alpha_refined_border_cleaned, hair_holes_mask=hair_holes_mask)
         alpha_filled_u8 = (alpha_refined_filled * 255.0).clip(0, 255).astype(np.uint8)
 
         refined_rgba = fg_rgba_np.copy()
@@ -272,4 +324,5 @@ class MatteRefineService:
             ),
             hair_internal_holes_mask=Image.fromarray((hair_holes_mask * 255.0).astype(np.uint8), mode='L'),
             hair_gap_filled_alpha=Image.fromarray(alpha_filled_u8, mode='L'),
+            border_residue_mask=Image.fromarray((border_residue_mask * 255.0).astype(np.uint8), mode='L'),
         )
