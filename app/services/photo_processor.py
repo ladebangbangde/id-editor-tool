@@ -246,6 +246,10 @@ class PhotoProcessor:
             save_image(refined_rgba, self.storage.temp_path(task_id, 'refined_foreground.png'))
             if refined.guided_alpha is not None:
                 save_image(refined.guided_alpha, self.storage.temp_path(task_id, 'guided_alpha.png'))
+            if refined.hair_internal_holes_mask is not None:
+                save_image(refined.hair_internal_holes_mask, self.storage.temp_path(task_id, 'hair_internal_holes_mask.png'))
+            if refined.hair_gap_filled_alpha is not None:
+                save_image(refined.hair_gap_filled_alpha, self.storage.temp_path(task_id, 'hair_gap_filled_alpha.png'))
             if refined.edge_band_mask is not None:
                 save_image(refined.edge_band_mask, self.storage.temp_path(task_id, 'edge_band_mask.png'))
             if decontaminated_refined_rgba is not None:
@@ -324,6 +328,8 @@ class PhotoProcessor:
         logger.info('Output quality evaluated status=%s reasons=%s warnings=%s', output_quality.status, output_quality.reason_codes, output_quality.warnings)
 
         preview_image, preview_quality = self._build_preview_image(hd_image)
+        if self.settings.save_intermediate:
+            save_image(hd_image, self.storage.temp_path(task_id, 'hair_gap_fixed_output.png'))
 
         hd_path = self.storage.hd_path(task_id, 'id_photo_hd.png')
         preview_path = self.storage.preview_path(task_id, 'id_photo_preview.jpg')
@@ -336,6 +342,8 @@ class PhotoProcessor:
         if self.settings.save_intermediate:
             if output_quality.cloth_pollution_mask is not None:
                 save_image(output_quality.cloth_pollution_mask, self.storage.temp_path(task_id, 'cloth_pollution_mask.png'))
+            if output_quality.hair_gap_residue_mask is not None:
+                save_image(output_quality.hair_gap_residue_mask, self.storage.temp_path(task_id, 'hair_gap_residue_mask.png'))
             intermediate_files = {}
             for name in (
                 'foreground.png',
@@ -344,6 +352,9 @@ class PhotoProcessor:
                 'refined_foreground.png',
                 'foreground_decontaminated.png',
                 'guided_alpha.png',
+                'hair_internal_holes_mask.png',
+                'hair_gap_filled_alpha.png',
+                'hair_gap_fixed_output.png',
                 'edge_band_mask.png',
                 'cropped_rgba.png',
                 'cropped_rgba_legacy.png',
@@ -351,6 +362,7 @@ class PhotoProcessor:
                 'hd_legacy.png',
                 'hd_decontaminated.png',
                 'cloth_pollution_mask.png',
+                'hair_gap_residue_mask.png',
             ):
                 path = self.storage.temp_path(task_id, name)
                 if path.exists():
