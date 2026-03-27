@@ -81,6 +81,16 @@ class PhotoProcessor:
         return resolved_path, load_image_from_path(resolved_path)
 
     def _build_detect_data(self, result: FaceDetectionResult) -> DetectData:
+        detect_warnings = [
+            warning
+            for warning in result.warnings
+            if warning and not self._looks_like_internal_message(warning)
+        ]
+        secondary_warnings = [
+            warning
+            for warning in result.secondary_warnings
+            if warning and not self._looks_like_internal_message(warning)
+        ]
         compliance_status = self._to_compliance_status(result.status)
         compliance_message = self._compliance_message(compliance_status)
         compliance_details = [
@@ -111,7 +121,7 @@ class PhotoProcessor:
             ],
             suggestions=result.suggestions,
             reasonCodes=result.reason_codes,
-            warnings=result.warnings,
+            warnings=detect_warnings,
             warningCodes=result.warning_codes,
             issues=[
                 {
@@ -123,7 +133,7 @@ class PhotoProcessor:
             ],
             faceBoxes=result.face_boxes,
             recommended=result.recommended,
-            warning='；'.join(result.warnings) if result.warnings else None,
+            warning='；'.join(detect_warnings) if detect_warnings else None,
             blurScore=result.blur_score,
             occlusionDetected=result.occlusion_detected,
             occlusionAreas=result.occlusion_areas,
@@ -132,8 +142,12 @@ class PhotoProcessor:
             compositionAccepted=result.composition_accepted,
             metrics=result.metrics,
             primaryIssue=result.primary_issue,
-            primaryMessage=result.primary_message,
-            secondaryWarnings=result.secondary_warnings,
+            primaryMessage=(
+                None
+                if result.primary_message and self._looks_like_internal_message(result.primary_message)
+                else result.primary_message
+            ),
+            secondaryWarnings=secondary_warnings,
             qualityStatus=result.status,
             qualityMessage=(
                 result.quality_message
@@ -163,6 +177,40 @@ class PhotoProcessor:
         if compliance_status == 'warning':
             return '图片已生成，但存在合规风险，不建议直接用于正式证件照提交'
         return '图片已生成，但不符合证件照规范，不建议用于正式提交'
+
+    @staticmethod
+    def _looks_like_internal_message(message: str) -> bool:
+        lowered = message.lower()
+        internal_markers = (
+            'enginecomparison',
+            'legacy-only',
+            'backend=',
+            'fallback',
+            'segmentation',
+            'compare=',
+            'output_quality=',
+            'debug',
+        )
+        return any(marker in lowered for marker in internal_markers)
+
+    def _build_user_facing_warnings(
+        self,
+        detect_warnings: list[str],
+        quality_warning_codes: list[str],
+    ) -> list[str]:
+        user_warnings: list[str] = []
+        for warning in detect_warnings:
+            cleaned = warning.strip()
+            if not cleaned or self._looks_like_internal_message(cleaned):
+                continue
+            if cleaned not in user_warnings:
+                user_warnings.append(cleaned)
+
+        for message in self.output_quality.user_messages_for_issues(quality_warning_codes):
+            if message not in user_warnings:
+                user_warnings.append(message)
+
+        return user_warnings
 
     def detect(self, image: Image.Image) -> DetectData:
         return self._build_detect_data(self.detector.detect(image))
@@ -289,9 +337,11 @@ class PhotoProcessor:
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)
 
-        warnings = detect_result.warnings.copy()
-        warnings.extend(selected_quality.warnings)
-        warnings.append('engineComparison: legacy-only')
+        # 前端主展示区只能使用用户可读中文提示，内部工程信息必须留在 debugInfo / 日志。
+        warnings = self._build_user_facing_warnings(
+            detect_warnings=detect_result.warnings,
+            quality_warning_codes=selected_quality.warnings,
+        )
         detect_summary = self._build_detect_data(detect_result)
         compliance_status = self._to_compliance_status(detect_result.status)
         compliance_message = self._compliance_message(compliance_status)
@@ -311,6 +361,18 @@ class PhotoProcessor:
 
         preview_info = self._file_info(preview_path) if save_output else FileInfo(path='', url='')
         hd_info = self._file_info(hd_path) if save_output else FileInfo(path='', url='')
+        output_quality_message = selected_quality.primary_message or '输出成片质量正常'
+        primary_message = (
+            selected_quality.primary_message
+            or detect_result.primary_message
+            or (warnings[0] if warnings else None)
+        )
+        secondary_warnings = [
+            warning
+            for warning in detect_result.secondary_warnings
+            if warning and not self._looks_like_internal_message(warning)
+        ]
+
         return GenerateData(
             taskId=task_id,
             previewPath=preview_info.path,
@@ -325,12 +387,12 @@ class PhotoProcessor:
             detect=detect_summary,
             detectSummary=detect_summary,
             primaryIssue=selected_quality.primary_issue or detect_result.primary_issue,
-            primaryMessage=selected_quality.primary_message or detect_result.primary_message,
-            secondaryWarnings=detect_result.secondary_warnings,
+            primaryMessage=primary_message,
+            secondaryWarnings=secondary_warnings,
             qualityStatus=final_quality_status,
             qualityMessage=final_quality_message,
             outputQualityStatus=selected_quality.status,
-            outputQualityMessage=selected_quality.primary_message or '输出成片质量正常',
+            outputQualityMessage=output_quality_message,
             outputReasonCodes=selected_quality.reason_codes,
             allowPreviewSave=selected_quality.status != 'FAIL',
             allowHdSave=selected_quality.status == 'PASS' and detect_result.status == 'PASS',
@@ -343,8 +405,14 @@ class PhotoProcessor:
             hdFormat='PNG',
             hdQuality=100,
             intermediateFiles=intermediate_files,
+            debugInfo={
+                'engine': selected_engine_name,
+                'engineComparison': 'legacy-only',
+                'outputQualityWarningCodes': selected_quality.warnings,
+                'outputQualityReasonCodes': selected_quality.reason_codes,
+            },
             processStatus='generated',
-            processMessage=f'图片已生成（engine={selected_engine_name}）',
+            processMessage='图片已生成，可预览并按需保存',
             complianceStatus=compliance_status,
             complianceMessage=compliance_message,
             complianceDetails=compliance_details,

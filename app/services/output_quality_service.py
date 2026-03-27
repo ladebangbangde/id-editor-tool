@@ -54,14 +54,30 @@ class OutputQualityService:
     }
 
     ISSUE_MESSAGES = {
-        'FACE_COLOR_POLLUTION': '脸部检测到明显底色串色，请更换干净背景重试',
-        'SKIN_TONE_ABNORMAL': '脸部肤色偏差较大，建议更换光线更均匀的照片',
-        'FOREGROUND_EDGE_BROKEN': '人物边界质量异常，头发或肩部边缘存在破损风险',
-        'FACIAL_FEATURE_CORRUPTED': '五官区域疑似受污染，建议重新处理或更换原图',
-        'CLOTH_COLOR_POLLUTION': '衣领/肩部检测到明显底色侵入，建议切换更稳健前景保护模式',
-        'HAIR_GAP_BACKGROUND_RESIDUE': '头发内部细缝存在漏底残留，建议使用更干净原图或重新抠图',
-        'BORDER_BACKGROUND_RESIDUE': '画面边缘仍残留原始背景，背景替换不完整',
+        'FACE_COLOR_POLLUTION': '脸部颜色存在轻微异常，建议确认后再保存',
+        'SKIN_TONE_ABNORMAL': '肤色表现不够自然，建议更换光线更均匀的照片',
+        'FOREGROUND_EDGE_BROKEN': '人物边缘不够自然，建议确认后再使用',
+        'FACIAL_FEATURE_CORRUPTED': '五官区域有轻微异常，建议放大检查',
+        'CLOTH_COLOR_POLLUTION': '衣领或肩部区域有少量底色影响，建议放大查看',
+        'HAIR_GAP_BACKGROUND_RESIDUE': '头发局部边缘仍有细小背景残留，建议确认效果',
+        'BORDER_BACKGROUND_RESIDUE': '画面边缘有少量背景残留，建议确认后再保存',
     }
+
+
+    @classmethod
+    def user_message_for_issue(cls, code: str | None) -> str | None:
+        if not code:
+            return None
+        return cls.ISSUE_MESSAGES.get(code)
+
+    @classmethod
+    def user_messages_for_issues(cls, codes: list[str]) -> list[str]:
+        messages: list[str] = []
+        for code in codes:
+            message = cls.user_message_for_issue(code)
+            if message and message not in messages:
+                messages.append(message)
+        return messages
 
     def __init__(self) -> None:
         self.settings = get_settings()

@@ -136,6 +136,45 @@ def test_generate_returns_dual_status_for_warning_result(processor: PhotoProcess
     assert payload.qualityStatus == 'WARNING'
     assert '不建议直接用于正式证件照提交' in payload.complianceMessage
     assert '不建议直接用于正式证件照提交' in payload.qualityMessage
+    assert 'engineComparison: legacy-only' not in payload.warnings
+    assert payload.processMessage == '图片已生成，可预览并按需保存'
+    assert payload.debugInfo is not None
+    assert payload.debugInfo.get('engineComparison') == 'legacy-only'
+
+
+def test_generate_maps_quality_warning_codes_to_user_facing_messages(processor: PhotoProcessor) -> None:
+    image = Image.new('RGB', (800, 1000), 'white')
+    processor.detector.detect = lambda _image: build_result(
+        status='PASS',
+        can_generate=True,
+        recommended=True,
+        warnings=['建议确认肩部边缘细节'],
+        warning_codes=['BAD_COMPOSITION'],
+    )
+    processor.segmenter.remove_background = lambda _image: image.convert('RGBA')
+    processor.cropper.crop = lambda rgba, spec, primary_face: rgba
+    processor.background.apply = lambda cropped_rgba, background_color: Image.new('RGB', (413, 579), 'white')
+    processor.enhancer.enhance = lambda img: img
+    processor.output_quality.evaluate = lambda **kwargs: OutputQualityResult(
+        status='WARNING',
+        reason_codes=[],
+        warnings=['CLOTH_COLOR_POLLUTION'],
+        primary_issue='CLOTH_COLOR_POLLUTION',
+        primary_message='衣领或肩部区域有少量底色影响，建议放大查看',
+        metrics={'cloth_pollution_ratio': 0.2},
+    )
+
+    payload = processor.generate(
+        image=image,
+        size_key='one_inch',
+        background_color='blue',
+        enhance=False,
+        save_output=False,
+    )
+
+    assert '建议确认肩部边缘细节' in payload.warnings
+    assert '衣领或肩部区域有少量底色影响，建议放大查看' in payload.warnings
+    assert all('enginecomparison' not in warning.lower() for warning in payload.warnings)
 
 
 def test_generate_marks_final_fail_when_output_quality_fails(processor: PhotoProcessor) -> None:
