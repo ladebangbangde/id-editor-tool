@@ -2,7 +2,7 @@ from fastapi import APIRouter, File, Form, UploadFile
 
 from app.core.exceptions import InvalidArgumentError
 from app.schemas.common import ApiResponse
-from app.schemas.generate import GenerateData
+from app.schemas.generate import GenerateData, GenerateSelectionData
 from app.services.photo_processor import get_photo_processor
 
 router = APIRouter(tags=['generate'])
@@ -37,4 +37,16 @@ async def generate(
             enhance=enhance,
             save_output=saveOutput,
         )
+    return ApiResponse(success=True, message='ok', data=data)
+
+
+@router.post('/generate/select', response_model=ApiResponse[GenerateSelectionData])
+async def select_generated_candidate(
+    taskId: str = Form(...),
+    candidateId: str = Form(...),
+) -> ApiResponse[GenerateSelectionData]:
+    processor = get_photo_processor()
+    if not candidateId:
+        raise InvalidArgumentError('请先选择要保存的图片')
+    data = processor.select_candidate(task_id=taskId, candidate_id=candidateId)
     return ApiResponse(success=True, message='ok', data=data)

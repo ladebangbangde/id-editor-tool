@@ -18,8 +18,9 @@ except Exception:  # rembg is optional at runtime when native deps are missing
 
 
 class SegmentationService:
-    def __init__(self) -> None:
+    def __init__(self, backend_mode: str = 'auto') -> None:
         self.settings = get_settings()
+        self.backend_mode = backend_mode
         self._rembg_session = None
         self._rembg_model_path = None
         self._last_debug_images: dict[str, Image.Image] = {}
@@ -50,24 +51,25 @@ class SegmentationService:
         rgba = image.convert('RGBA')
         self._last_debug_images = {}
 
-        if self.settings.baidu_segmentation_enabled:
+        use_baidu = self.backend_mode == 'baidu' or (self.backend_mode == 'auto' and self.settings.baidu_segmentation_enabled)
+        if use_baidu:
             if self._baidu_service is None:
                 raise AppError(
                     code='BAIDU_SEGMENTATION_NOT_INITIALIZED',
                     message='Baidu segmentation backend is enabled but service is not initialized',
                     status_code=500,
                 )
-            logger.info('Segmentation backend=baidu start')
+            logger.info('Segmentation backend=baidu start mode=%s', self.backend_mode)
             result = self._baidu_service.segment_human(rgba)
             self._last_debug_images['baidu_foreground.png'] = result.foreground
             if result.labelmap is not None:
                 self._last_debug_images['baidu_labelmap.png'] = result.labelmap
             if result.scoremap is not None:
                 self._last_debug_images['baidu_scoremap.png'] = result.scoremap
-            logger.info('Segmentation backend=baidu success')
+            logger.info('Segmentation backend=baidu success mode=%s', self.backend_mode)
             return result.foreground.convert('RGBA')
 
-        logger.warning('Segmentation backend=rembg (BAIDU_SEGMENTATION_ENABLED=false)')
+        logger.warning('Segmentation backend=legacy-rembg mode=%s', self.backend_mode)
         return self._remove_background_with_rembg(rgba)
 
     def _remove_background_with_rembg(self, image: Image.Image) -> Image.Image:

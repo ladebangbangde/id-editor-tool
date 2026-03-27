@@ -6,9 +6,11 @@
 
 - `GET /health`：健康检查。
 - `POST /detect`：支持上传图片或传入共享图片路径做 CPU 友好的预检（PASS/WARNING/FAIL）。
-- `POST /generate`：支持上传原图或传入共享路径生成证件照预览图与高清图。
+- `POST /generate`：支持上传原图或传入共享路径并行生成双候选结果（方案A=百度链路，方案B=旧链路），由用户后续选择。
 - `POST /photo/precheck`：独立的照片预检接口，返回结构化指标与风险提示。
 - `POST /photo/process`：`/generate` 的兼容别名，处理前自动执行预检。
+- `POST /generate/select`：确认保存用户选中的候选图（需 `taskId` + `candidateId`）。
+- `POST /photo/confirm-selection`：`/generate/select` 的兼容别名。
 - `GET /photo/specs`：返回 tool 当前支持的 canonical `sizeKey`、像素/毫米尺寸、aliases 与是否支持自定义尺寸。
 - `POST /layout`：基于原图/共享路径/已生成证件照生成 6 寸排版图。
 - `POST /formal-wear`：兼容占位接口（换装功能已下线，固定返回下线提示，不影响主链路）。
@@ -29,7 +31,7 @@
 - 排版：6 寸纸张打印参考图。
 - 预检指标：`OpenCV` 计算清晰度、亮度、边缘密度等可解释指标。
 - 质量提示：提供 `primaryIssue/primaryMessage/secondaryWarnings/qualityStatus`，并支持一阶段颈部饰品检测。
-- 普通图与高清图分离：preview 使用更低分辨率 JPEG 压缩，hd 保留完整输出像素。
+- `/generate` 返回双候选正式结果图，tool 不自动替用户选择；可通过 `/generate/select` 或 `/photo/confirm-selection` 确认保存候选。
 
 ## 目录结构
 
