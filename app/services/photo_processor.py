@@ -370,6 +370,11 @@ class PhotoProcessor:
                 path = self.storage.temp_path(task_id, name)
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)
+            if intermediate_files:
+                logger.warning('================ INTERMEDIATE ARTIFACTS (task_id=%s) ================', task_id)
+                for name, file_info in intermediate_files.items():
+                    logger.warning('INTERMEDIATE %-30s path=%s url=%s', name, file_info.path, file_info.url)
+                logger.warning('================ END INTERMEDIATE ARTIFACTS (task_id=%s) ============', task_id)
 
         warnings = detect_result.warnings.copy()
         warnings.extend(output_quality.warnings)
