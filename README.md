@@ -180,9 +180,6 @@ MIN_IMAGE_WIDTH=400
 MIN_IMAGE_HEIGHT=400
 PREVIEW_QUALITY=90
 HD_QUALITY=95
-PHOTO_ENGINE=auto
-ENABLE_HIVISION_COMPARISON=true
-ENABLE_HIVISION_AS_DEFAULT=false
 HIVISION_REPO_PATH=
 ```
 
@@ -196,9 +193,6 @@ HIVISION_REPO_PATH=
 - `DEFAULT_BACKGROUND_COLOR`：默认底色
 - `DEFAULT_SIZE_KEY`：默认证件照规格
 
-- `PHOTO_ENGINE`：生成内核选择（`legacy` / `hivision` / `auto`）。
-- `ENABLE_HIVISION_COMPARISON`：是否在非 hivision 模式下并行生成对比结果。
-- `ENABLE_HIVISION_AS_DEFAULT`：灰度开关，允许在配置未切换时优先启用 hivision。
 - `HIVISION_REPO_PATH`：可选，本地 HivisionIDPhotos 代码路径（库级接入，不启动额外服务）。
 
 ## 证件照规格

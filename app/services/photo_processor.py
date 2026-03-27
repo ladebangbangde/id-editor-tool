@@ -235,15 +235,6 @@ class PhotoProcessor:
         return preview_image, preview_quality
 
 
-    def _resolve_engine_mode(self) -> str:
-        mode = (self.settings.photo_engine or 'auto').strip().lower()
-        if mode not in {'legacy', 'hivision', 'auto'}:
-            logger.warning('Unknown PHOTO_ENGINE=%s fallback to auto', mode)
-            return 'auto'
-        if self.settings.enable_hivision_as_default and mode == 'legacy':
-            return 'hivision'
-        return mode
-
     def _pick_best_result(self, primary_quality, secondary_quality, *, primary_name: str, secondary_name: str) -> str:
         severity_rank = {'PASS': 0, 'WARNING': 1, 'FAIL': 2}
         p = severity_rank.get(primary_quality.status, 2)
@@ -288,7 +279,6 @@ class PhotoProcessor:
             face_box=detect_result.primary_face,
         )
 
-        mode = self._resolve_engine_mode()
         legacy_result = self.legacy_engine.generate(payload)
         legacy_quality = self.output_quality.evaluate(
             source_image=image,
@@ -301,37 +291,20 @@ class PhotoProcessor:
         selected_engine_name = 'legacy'
         selected_result = legacy_result
         selected_quality = legacy_quality
-        comparison_summary: list[str] = []
+        comparison_summary: list[str] = [f"legacy={legacy_quality.status}"]
 
-        should_run_hivision = mode in {'hivision', 'auto'} or self.settings.enable_hivision_comparison
         hivision_result = None
         hivision_quality = None
-        if should_run_hivision:
-            try:
-                hivision_result = self.hivision_engine.generate(payload)
-                hivision_quality = self.output_quality.evaluate(
-                    source_image=image,
-                    output_image=hivision_result.hd_image,
-                    foreground_rgba=hivision_result.foreground_rgba,
-                    face_box=detect_result.primary_face,
-                    background_color=background_color,
-                )
-                comparison_summary.append(f"hivision={hivision_quality.status}")
-            except Exception as exc:
-                logger.warning('Hivision engine failed, keep legacy result: %s', exc)
-                comparison_summary.append('hivision=ERROR')
-
-        comparison_summary.append(f"legacy={legacy_quality.status}")
-
-        if mode == 'legacy':
-            pass
-        elif mode == 'hivision' and hivision_result is not None and hivision_quality is not None:
-            selected_engine_name = 'hivision'
-            selected_result = hivision_result
-            selected_quality = hivision_quality
-        elif mode == 'hivision':
-            logger.warning('PHOTO_ENGINE=hivision but hivision failed; fallback legacy')
-        elif mode == 'auto' and hivision_result is not None and hivision_quality is not None:
+        try:
+            hivision_result = self.hivision_engine.generate(payload)
+            hivision_quality = self.output_quality.evaluate(
+                source_image=image,
+                output_image=hivision_result.hd_image,
+                foreground_rgba=hivision_result.foreground_rgba,
+                face_box=detect_result.primary_face,
+                background_color=background_color,
+            )
+            comparison_summary.insert(0, f"hivision={hivision_quality.status}")
             picked = self._pick_best_result(
                 legacy_quality,
                 hivision_quality,
@@ -342,8 +315,11 @@ class PhotoProcessor:
                 selected_engine_name = 'hivision'
                 selected_result = hivision_result
                 selected_quality = hivision_quality
+        except Exception as exc:
+            logger.warning('Hivision engine failed, keep legacy result: %s', exc)
+            comparison_summary.insert(0, 'hivision=ERROR')
 
-        logger.info('Engine select mode=%s selected=%s compare=%s', mode, selected_engine_name, ', '.join(comparison_summary))
+        logger.info('Engine select default=hivision selected=%s compare=%s', selected_engine_name, ', '.join(comparison_summary))
 
         hd_image = selected_result.hd_image
         preview_image = selected_result.preview_image
