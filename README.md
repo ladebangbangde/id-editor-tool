@@ -171,7 +171,7 @@ PREVIEW_DIR=preview
 HD_DIR=hd
 PRINT_DIR=print
 TEMP_DIR=temp
-SAVE_INTERMEDIATE=true
+SAVE_INTERMEDIATE=false
 BAIDU_SEGMENTATION_ENABLED=true
 BAIDU_API_KEY=
 BAIDU_SECRET_KEY=
@@ -193,7 +193,7 @@ HD_QUALITY=95
 - `APP_PORT`：服务端口
 - `UPLOAD_ROOT`：容器内共享上传根目录，默认 `/app/uploads`
 - `STATIC_MOUNT_PATH`：静态访问前缀，默认 `/uploads`
-- `SAVE_INTERMEDIATE`：是否保存抠图等中间结果（包含 `baidu_foreground.png` / `baidu_labelmap.png` / `baidu_scoremap.png`）
+- `SAVE_INTERMEDIATE`：是否保存抠图等中间结果（包含 `baidu_foreground.png` / `baidu_labelmap.png` / `baidu_scoremap.png`），生产环境建议保持 `SAVE_INTERMEDIATE=false`
 - `BAIDU_SEGMENTATION_ENABLED`：是否启用百度人像分割正式链路（默认 true）
 - `BAIDU_API_KEY` / `BAIDU_SECRET_KEY`：百度鉴权凭据；缺失时会直接报错，不会静默回退
 - `MAX_UPLOAD_SIZE_MB`：最大上传大小
@@ -522,7 +522,7 @@ python scripts/test_layout.py --image inputs/test.jpg --size-key one_inch --back
 如果需要保留更多处理痕迹，请在 `.env` 中设置：
 
 ```env
-SAVE_INTERMEDIATE=true
+SAVE_INTERMEDIATE=false
 ```
 
 ## 错误码

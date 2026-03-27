@@ -42,6 +42,8 @@ class OutputQualityService:
     HAIR_GAP_RESIDUE_WARN = 0.004
     BORDER_RESIDUE_FAIL = 0.22
     BORDER_RESIDUE_WARN = 0.10
+    EDGE_FAST_SKIP_RATIO = 0.0012
+    HAIR_FAST_SKIP_BRIGHT_RATIO = 0.0008
 
     ISSUE_PRIORITY = {
         'FACE_COLOR_POLLUTION': 100,
@@ -265,8 +267,15 @@ class OutputQualityService:
                     else:
                         sat = rgb2hsv(out_rgb.astype(np.float32) / 255.0)[:, :, 1].astype(np.float32)
 
+                    hair_patch = hair_region[hair_top:hair_bottom, hair_left:hair_right]
                     bright_low_sat = (np.mean(hair_rgb, axis=2) > 214.0) & (sat < 0.16)
-                    candidate = hair_region & bright_low_sat
+                    candidate_patch = bright_low_sat[hair_top:hair_bottom, hair_left:hair_right] & hair_patch
+                    if float(np.mean(candidate_patch)) < self.HAIR_FAST_SKIP_BRIGHT_RATIO:
+                        metrics['hair_gap_residue_ratio'] = 0.0
+                        candidate = np.zeros((h, w), dtype=bool)
+                    else:
+                        candidate = np.zeros((h, w), dtype=bool)
+                        candidate[hair_top:hair_bottom, hair_left:hair_right] = candidate_patch
                     labels = measure.label(candidate, connectivity=2)
                     residue_mask = np.zeros((h, w), dtype=np.uint8)
                     for region in measure.regionprops(labels):
@@ -318,7 +327,9 @@ class OutputQualityService:
 
         edge_band = (alpha > 8) & (alpha < 248)
         edge_noise = 0.0
-        if np.any(edge_band):
+        edge_ratio = float(np.mean(edge_band))
+        metrics['edge_band_ratio'] = edge_ratio
+        if np.any(edge_band) and edge_ratio >= self.EDGE_FAST_SKIP_RATIO:
             region = edge_band.astype(bool)
             if cv2 is not None:
                 edge_u8 = region.astype(np.uint8)
@@ -339,6 +350,8 @@ class OutputQualityService:
                 reason_codes.append('FOREGROUND_EDGE_BROKEN')
             elif edge_noise >= self.EDGE_NOISE_WARN:
                 warnings.append('FOREGROUND_EDGE_BROKEN')
+        elif np.any(edge_band):
+            metrics['edge_noise_score'] = 0.0
 
         reason_codes = sorted(set(reason_codes), key=lambda code: -self.ISSUE_PRIORITY.get(code, 0))
         warnings = sorted(set(warnings), key=lambda code: -self.ISSUE_PRIORITY.get(code, 0))

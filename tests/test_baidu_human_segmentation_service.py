@@ -40,19 +40,22 @@ def test_segment_human_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     calls = {'count': 0}
 
-    def fake_post(url, **kwargs):
-        calls['count'] += 1
-        if 'oauth' in url:
-            return DummyResponse({'access_token': 'token-1', 'expires_in': 3600})
-        return DummyResponse(
-            {
-                'foreground': _png_base64(fg),
-                'labelmap': _png_base64(label),
-                'scoremap': _png_base64(score),
-            }
-        )
+    class DummySession:
+        def post(self, url, **kwargs):
+            calls['count'] += 1
+            if 'oauth' in url:
+                return DummyResponse({'access_token': 'token-1', 'expires_in': 3600})
+            return DummyResponse(
+                {
+                    'foreground': _png_base64(fg),
+                    'labelmap': _png_base64(label),
+                    'scoremap': _png_base64(score),
+                }
+            )
 
-    monkeypatch.setattr('app.services.baidu_human_segmentation_service.requests.post', fake_post)
+    monkeypatch.setattr(BaiduHumanSegmentationService, '_http_session', DummySession())
+    BaiduHumanSegmentationService._cached_token = None
+    BaiduHumanSegmentationService._token_expire_at = 0.0
 
     svc = BaiduHumanSegmentationService()
     result = svc.segment_human(Image.new('RGB', (12, 16), 'white'))
@@ -64,11 +67,38 @@ def test_segment_human_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls['count'] == 2
 
 
+def test_access_token_cache_hit(monkeypatch: pytest.MonkeyPatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv('BAIDU_SEGMENTATION_ENABLED', 'true')
+    monkeypatch.setenv('BAIDU_API_KEY', 'k')
+    monkeypatch.setenv('BAIDU_SECRET_KEY', 's')
+
+    calls = {'count': 0}
+
+    class DummySession:
+        def post(self, url, **kwargs):
+            calls['count'] += 1
+            return DummyResponse({'access_token': 'token-1', 'expires_in': 3600})
+
+    monkeypatch.setattr(BaiduHumanSegmentationService, '_http_session', DummySession())
+    BaiduHumanSegmentationService._cached_token = None
+    BaiduHumanSegmentationService._token_expire_at = 0.0
+
+    svc = BaiduHumanSegmentationService()
+    token_1 = svc.get_access_token()
+    token_2 = svc.get_access_token()
+
+    assert token_1 == token_2 == 'token-1'
+    assert calls['count'] == 1
+
+
 def test_segment_human_requires_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     monkeypatch.setenv('BAIDU_SEGMENTATION_ENABLED', 'true')
     monkeypatch.delenv('BAIDU_API_KEY', raising=False)
     monkeypatch.delenv('BAIDU_SECRET_KEY', raising=False)
+    BaiduHumanSegmentationService._cached_token = None
+    BaiduHumanSegmentationService._token_expire_at = 0.0
 
     svc = BaiduHumanSegmentationService()
     with pytest.raises(AppError) as exc_info:

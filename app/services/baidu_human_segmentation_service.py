@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 import time
 from dataclasses import dataclass
 from io import BytesIO
@@ -23,10 +24,19 @@ class BaiduSegmentationResult:
 
 
 class BaiduHumanSegmentationService:
+    _token_lock = threading.RLock()
+    _cached_token: str | None = None
+    _token_expire_at: float = 0.0
+    _http_session: requests.Session | None = None
+
     def __init__(self) -> None:
         self.settings = get_settings()
-        self._token: str | None = None
-        self._token_expire_at: float = 0
+
+    @classmethod
+    def _get_http_session(cls) -> requests.Session:
+        if cls._http_session is None:
+            cls._http_session = requests.Session()
+        return cls._http_session
 
     def _decode_base64_image(self, value: str, mode: str | None = None) -> Image.Image:
         raw_value = value.split(',', 1)[1] if value.startswith('data:') and ',' in value else value
@@ -43,8 +53,10 @@ class BaiduHumanSegmentationService:
 
     def get_access_token(self) -> str:
         now = time.time()
-        if self._token and now < self._token_expire_at:
-            return self._token
+        cached_token = self.__class__._cached_token
+        if cached_token and now < self.__class__._token_expire_at:
+            logger.info('Baidu access token cache hit')
+            return cached_token
 
         if not self.settings.baidu_api_key or not self.settings.baidu_secret_key:
             raise AppError(
@@ -53,44 +65,55 @@ class BaiduHumanSegmentationService:
                 status_code=500,
             )
 
-        try:
-            response = requests.post(
-                self.settings.baidu_oauth_url,
-                params={
-                    'grant_type': 'client_credentials',
-                    'client_id': self.settings.baidu_api_key,
-                    'client_secret': self.settings.baidu_secret_key,
-                },
-                timeout=self.settings.baidu_http_timeout_sec,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except requests.RequestException as exc:
-            logger.exception('Baidu OAuth request failed')
-            raise AppError(
-                code='BAIDU_ACCESS_TOKEN_FAILED',
-                message=f'Failed to fetch Baidu access token: {exc}',
-                status_code=502,
-            ) from exc
+        with self.__class__._token_lock:
+            now = time.time()
+            cached_token = self.__class__._cached_token
+            if cached_token and now < self.__class__._token_expire_at:
+                logger.info('Baidu access token cache hit')
+                return cached_token
 
-        access_token = payload.get('access_token')
-        if not access_token:
-            error_code = payload.get('error', payload.get('error_code', 'unknown'))
-            error_message = payload.get('error_description', payload.get('error_msg', 'unknown error'))
-            logger.error('Baidu OAuth response missing access_token error=%s message=%s', error_code, error_message)
-            raise AppError(
-                code='BAIDU_ACCESS_TOKEN_FAILED',
-                message=f'Failed to fetch Baidu access token: {error_code} {error_message}',
-                status_code=502,
-                details=payload,
-            )
+            try:
+                response = self._get_http_session().post(
+                    self.settings.baidu_oauth_url,
+                    params={
+                        'grant_type': 'client_credentials',
+                        'client_id': self.settings.baidu_api_key,
+                        'client_secret': self.settings.baidu_secret_key,
+                    },
+                    timeout=self.settings.baidu_http_timeout_sec,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except requests.RequestException as exc:
+                logger.exception('Baidu OAuth request failed')
+                raise AppError(
+                    code='BAIDU_ACCESS_TOKEN_FAILED',
+                    message=f'Failed to fetch Baidu access token: {exc}',
+                    status_code=502,
+                ) from exc
 
-        expires_in = int(payload.get('expires_in', 0))
-        refresh_buffer = max(60, min(300, expires_in // 10)) if expires_in > 0 else 60
-        self._token = str(access_token)
-        self._token_expire_at = now + max(expires_in - refresh_buffer, 60)
-        logger.info('Baidu access token acquired expires_in=%s', expires_in)
-        return self._token
+            access_token = payload.get('access_token')
+            if not access_token:
+                error_code = payload.get('error', payload.get('error_code', 'unknown'))
+                error_message = payload.get('error_description', payload.get('error_msg', 'unknown error'))
+                logger.error('Baidu OAuth response missing access_token error=%s message=%s', error_code, error_message)
+                raise AppError(
+                    code='BAIDU_ACCESS_TOKEN_FAILED',
+                    message=f'Failed to fetch Baidu access token: {error_code} {error_message}',
+                    status_code=502,
+                    details=payload,
+                )
+
+            expires_in = int(payload.get('expires_in', 0))
+            refresh_buffer = max(120, min(600, expires_in // 10)) if expires_in > 0 else 120
+            self.__class__._cached_token = str(access_token)
+            self.__class__._token_expire_at = now + max(expires_in - refresh_buffer, 60)
+            logger.info(
+                'Baidu access token refreshed expires_in=%s refresh_buffer=%s',
+                expires_in,
+                refresh_buffer,
+            )
+            return str(access_token)
 
     @staticmethod
     def _extract_result(payload: dict) -> dict:
@@ -105,7 +128,7 @@ class BaiduHumanSegmentationService:
             'type': 'foreground',
         }
         try:
-            response = requests.post(
+            response = self._get_http_session().post(
                 f"{self.settings.baidu_segmentation_url}?access_token={token}",
                 headers={'Content-Type': 'application/x-www-form-urlencoded'},
                 data=body,

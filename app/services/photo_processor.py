@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import UploadFile
 from PIL import Image
@@ -44,6 +45,8 @@ logger = get_logger(__name__)
 
 
 class PhotoProcessor:
+    _debug_save_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='debug-save')
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self.storage = StorageService()
@@ -212,6 +215,19 @@ class PhotoProcessor:
 
         return user_warnings
 
+    def _save_intermediate_images(
+        self,
+        task_id: str,
+        debug_images: dict[str, Image.Image],
+    ) -> dict[str, FileInfo]:
+        intermediate_files: dict[str, FileInfo] = {}
+        for name, img in debug_images.items():
+            path = self.storage.temp_path(task_id, name)
+            # 异步写盘，避免中间图 I/O 阻塞正式响应主链路。
+            self._debug_save_executor.submit(save_image, img, path)
+            intermediate_files[name] = self._file_info(path)
+        return intermediate_files
+
     def detect(self, image: Image.Image) -> DetectData:
         return self._build_detect_data(self.detector.detect(image))
 
@@ -328,14 +344,10 @@ class PhotoProcessor:
                 all_debug['cloth_pollution_mask.png'] = selected_quality.cloth_pollution_mask
             if selected_quality.hair_gap_residue_mask is not None:
                 all_debug['hair_gap_residue_mask.png'] = selected_quality.hair_gap_residue_mask
-            for name, img in all_debug.items():
-                save_image(img, self.storage.temp_path(task_id, name))
-
-            intermediate_files = {}
-            for name in sorted(all_debug.keys()):
-                path = self.storage.temp_path(task_id, name)
-                if path.exists():
-                    intermediate_files[name] = self._file_info(path)
+            intermediate_files = self._save_intermediate_images(
+                task_id=task_id,
+                debug_images=all_debug,
+            )
 
         # 前端主展示区只能使用用户可读中文提示，内部工程信息必须留在 debugInfo / 日志。
         warnings = self._build_user_facing_warnings(
