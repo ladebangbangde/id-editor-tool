@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     enable_cloth_pollution_check: bool = Field(default=True, alias='ENABLE_CLOTH_POLLUTION_CHECK')
     enable_decontaminated_output_as_default: bool = Field(default=True, alias='ENABLE_DECONTAMINATED_OUTPUT_AS_DEFAULT')
     enable_guided_edge_refinement: bool = Field(default=True, alias='ENABLE_GUIDED_EDGE_REFINEMENT')
+
+    photo_engine: str = Field(default='auto', alias='PHOTO_ENGINE')
+    enable_hivision_comparison: bool = Field(default=True, alias='ENABLE_HIVISION_COMPARISON')
+    enable_hivision_as_default: bool = Field(default=False, alias='ENABLE_HIVISION_AS_DEFAULT')
+    hivision_repo_path: str = Field(default='', alias='HIVISION_REPO_PATH')
     max_upload_size_mb: int = Field(default=15, alias='MAX_UPLOAD_SIZE_MB')
     default_background_color: str = Field(default='blue', alias='DEFAULT_BACKGROUND_COLOR')
     default_size_key: str = Field(default='one_inch', alias='DEFAULT_SIZE_KEY')

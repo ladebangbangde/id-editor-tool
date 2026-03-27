@@ -25,6 +25,8 @@ from app.schemas.detect import DetectData
 from app.schemas.generate import GenerateData
 from app.schemas.layout import LayoutData
 from app.services.background import BackgroundService
+from app.services.engines.hivision_engine import HivisionPhotoGenerationEngine
+from app.services.engines.legacy_engine import LegacyPhotoGenerationEngine
 from app.services.cropper import CropperService
 from app.services.enhancer import EnhancerService
 from app.services.face_detection import FaceDetectionResult, FaceDetectionService
@@ -32,6 +34,7 @@ from app.services.layout import LayoutService
 from app.services.matte_refine_service import MatteRefineService
 from app.services.output_quality_service import OutputQualityService
 from app.services.segmentation import SegmentationService
+from app.services.photo_generation_engine import EngineInput
 from app.services.specs import PhotoSpec, get_photo_spec
 from app.services.storage import StorageService
 from app.utils.file_naming import build_task_id
@@ -53,6 +56,25 @@ class PhotoProcessor:
         self.matte_refiner = MatteRefineService()
         self.output_quality = OutputQualityService()
         self.layout_service = LayoutService()
+        self.legacy_engine = LegacyPhotoGenerationEngine(
+            segmenter=self.segmenter,
+            matte_refiner=self.matte_refiner,
+            cropper=self.cropper,
+            background=self.background,
+            enhancer=self.enhancer,
+            preview_builder=self._build_preview_image,
+            settings=self.settings,
+        )
+        self.hivision_engine = HivisionPhotoGenerationEngine(
+            segmenter=self.segmenter,
+            matte_refiner=self.matte_refiner,
+            cropper=self.cropper,
+            background=self.background,
+            enhancer=self.enhancer,
+            preview_builder=self._build_preview_image,
+            settings=self.settings,
+            logger=logger,
+        )
 
     async def read_upload(self, file: UploadFile) -> tuple[bytes, Image.Image]:
         validate_upload(file)
@@ -212,6 +234,33 @@ class PhotoProcessor:
         preview_quality = min(self.settings.preview_quality, 75)
         return preview_image, preview_quality
 
+
+    def _resolve_engine_mode(self) -> str:
+        mode = (self.settings.photo_engine or 'auto').strip().lower()
+        if mode not in {'legacy', 'hivision', 'auto'}:
+            logger.warning('Unknown PHOTO_ENGINE=%s fallback to auto', mode)
+            return 'auto'
+        if self.settings.enable_hivision_as_default and mode == 'legacy':
+            return 'hivision'
+        return mode
+
+    def _pick_best_result(self, primary_quality, secondary_quality, *, primary_name: str, secondary_name: str) -> str:
+        severity_rank = {'PASS': 0, 'WARNING': 1, 'FAIL': 2}
+        p = severity_rank.get(primary_quality.status, 2)
+        s = severity_rank.get(secondary_quality.status, 2)
+        if s < p:
+            return secondary_name
+        if s > p:
+            return primary_name
+
+        def critical_count(q):
+            keys = {'FACE_COLOR_POLLUTION', 'CLOTH_COLOR_POLLUTION', 'HAIR_GAP_BACKGROUND_RESIDUE', 'BORDER_BACKGROUND_RESIDUE'}
+            return len(keys.intersection(set(q.reason_codes)))
+
+        if critical_count(secondary_quality) < critical_count(primary_quality):
+            return secondary_name
+        return primary_name
+
     def generate(
         self,
         image: Image.Image,
@@ -231,107 +280,74 @@ class PhotoProcessor:
         self.storage.category_task_dir('temp', task_id)
         logger.info('Task directories prepared task_id=%s upload_root=%s', task_id, self.storage.upload_root)
 
-        rgba_foreground = self.segmenter.remove_background(image)
-        logger.info('Background removed')
-        if self.settings.save_intermediate:
-            save_image(rgba_foreground, self.storage.temp_path(task_id, 'foreground.png'))
-
-        refined = self.matte_refiner.refine(image, rgba_foreground)
-        refined_rgba = refined.rgba
-        decontaminated_refined_rgba = refined.decontaminated_rgba
-        logger.info('Matte refined')
-        if self.settings.save_intermediate:
-            save_image(refined.alpha, self.storage.temp_path(task_id, 'refined_alpha.png'))
-            save_image(refined.trimap, self.storage.temp_path(task_id, 'trimap.png'))
-            save_image(refined_rgba, self.storage.temp_path(task_id, 'refined_foreground.png'))
-            if refined.guided_alpha is not None:
-                save_image(refined.guided_alpha, self.storage.temp_path(task_id, 'guided_alpha.png'))
-            if refined.hair_internal_holes_mask is not None:
-                save_image(refined.hair_internal_holes_mask, self.storage.temp_path(task_id, 'hair_internal_holes_mask.png'))
-            if refined.hair_gap_filled_alpha is not None:
-                save_image(refined.hair_gap_filled_alpha, self.storage.temp_path(task_id, 'hair_gap_filled_alpha.png'))
-            if refined.border_residue_mask is not None:
-                save_image(refined.border_residue_mask, self.storage.temp_path(task_id, 'border_residue_mask.png'))
-            if refined.edge_band_mask is not None:
-                save_image(refined.edge_band_mask, self.storage.temp_path(task_id, 'edge_band_mask.png'))
-            if decontaminated_refined_rgba is not None:
-                save_image(decontaminated_refined_rgba, self.storage.temp_path(task_id, 'foreground_decontaminated.png'))
-
-        cropped_legacy_rgba = self.cropper.crop(refined_rgba, spec, detect_result.primary_face)
-        cropped_decontaminated_rgba = None
-        if self.settings.enable_foreground_decontamination and decontaminated_refined_rgba is not None:
-            cropped_decontaminated_rgba = self.cropper.crop(decontaminated_refined_rgba, spec, detect_result.primary_face)
-        use_decontaminated_output = cropped_decontaminated_rgba is not None
-        if not self.settings.enable_decontaminated_output_as_default and cropped_decontaminated_rgba is not None:
-            logger.warning('decontaminated default output disabled by rollback switch ENABLE_DECONTAMINATED_OUTPUT_AS_DEFAULT=false')
-            use_decontaminated_output = False
-        cropped_rgba = cropped_decontaminated_rgba if use_decontaminated_output else cropped_legacy_rgba
-        logger.info('Portrait cropped to target size')
-        if self.settings.save_intermediate:
-            save_image(cropped_rgba, self.storage.temp_path(task_id, 'cropped_rgba.png'))
-            save_image(cropped_legacy_rgba, self.storage.temp_path(task_id, 'cropped_rgba_legacy.png'))
-            if cropped_decontaminated_rgba is not None:
-                save_image(cropped_decontaminated_rgba, self.storage.temp_path(task_id, 'cropped_rgba_decontaminated.png'))
-
-        hd_image_legacy = self.background.apply(cropped_legacy_rgba, background_color)
-        hd_image_legacy_final = hd_image_legacy
-        hd_image = hd_image_legacy_final
-        hd_image_decontaminated = None
-        hd_image_decontaminated_final = None
-        if cropped_decontaminated_rgba is not None:
-            hd_image_decontaminated = self.background.apply_edge_aware(cropped_decontaminated_rgba, background_color)
-            hd_image_decontaminated_final = hd_image_decontaminated
-            if use_decontaminated_output:
-                hd_image = hd_image_decontaminated_final
-        logger.info('Background applied')
-        if self.settings.save_intermediate and hd_image_decontaminated is not None:
-            save_image(hd_image_legacy, self.storage.temp_path(task_id, 'hd_legacy.png'))
-            save_image(hd_image_decontaminated, self.storage.temp_path(task_id, 'hd_decontaminated.png'))
-        if enhance:
-            hd_image_legacy_final = self.enhancer.enhance(hd_image_legacy_final)
-            if hd_image_decontaminated_final is not None:
-                hd_image_decontaminated_final = self.enhancer.enhance(hd_image_decontaminated_final)
-            hd_image = hd_image_decontaminated_final if (use_decontaminated_output and hd_image_decontaminated_final is not None) else hd_image_legacy_final
-            logger.info('Enhancement applied')
-
-        output_quality = self.output_quality.evaluate(
+        payload = EngineInput(
             source_image=image,
-            output_image=hd_image,
-            foreground_rgba=cropped_rgba,
+            spec=spec,
+            background_color=background_color,
+            enhance=enhance,
+            face_box=detect_result.primary_face,
+        )
+
+        mode = self._resolve_engine_mode()
+        legacy_result = self.legacy_engine.generate(payload)
+        legacy_quality = self.output_quality.evaluate(
+            source_image=image,
+            output_image=legacy_result.hd_image,
+            foreground_rgba=legacy_result.foreground_rgba,
             face_box=detect_result.primary_face,
             background_color=background_color,
         )
-        if hd_image_decontaminated is not None:
-            legacy_quality = self.output_quality.evaluate(
-                source_image=image,
-                output_image=hd_image_legacy_final,
-                foreground_rgba=cropped_legacy_rgba,
-                face_box=detect_result.primary_face,
-                background_color=background_color,
-            )
-            severity_rank = {'PASS': 0, 'WARNING': 1, 'FAIL': 2}
-            cloth_fail_decontaminated = 'CLOTH_COLOR_POLLUTION' in output_quality.reason_codes
-            cloth_fail_legacy = 'CLOTH_COLOR_POLLUTION' in legacy_quality.reason_codes
-            fallback_to_legacy = (
-                severity_rank.get(output_quality.status, 2) > severity_rank.get(legacy_quality.status, 2)
-                or (cloth_fail_decontaminated and not cloth_fail_legacy)
-            )
-            if fallback_to_legacy:
-                logger.warning(
-                    'Auto fallback to legacy output due to degraded decontaminated quality decontaminated=%s legacy=%s',
-                    output_quality.status,
-                    legacy_quality.status,
-                )
-                hd_image = hd_image_legacy
-                if enhance:
-                    hd_image = hd_image_legacy_final
-                cropped_rgba = cropped_legacy_rgba
-                output_quality = legacy_quality
-        logger.info('Output quality evaluated status=%s reasons=%s warnings=%s', output_quality.status, output_quality.reason_codes, output_quality.warnings)
 
-        preview_image, preview_quality = self._build_preview_image(hd_image)
-        if self.settings.save_intermediate:
-            save_image(hd_image, self.storage.temp_path(task_id, 'hair_gap_fixed_output.png'))
+        selected_engine_name = 'legacy'
+        selected_result = legacy_result
+        selected_quality = legacy_quality
+        comparison_summary: list[str] = []
+
+        should_run_hivision = mode in {'hivision', 'auto'} or self.settings.enable_hivision_comparison
+        hivision_result = None
+        hivision_quality = None
+        if should_run_hivision:
+            try:
+                hivision_result = self.hivision_engine.generate(payload)
+                hivision_quality = self.output_quality.evaluate(
+                    source_image=image,
+                    output_image=hivision_result.hd_image,
+                    foreground_rgba=hivision_result.foreground_rgba,
+                    face_box=detect_result.primary_face,
+                    background_color=background_color,
+                )
+                comparison_summary.append(f"hivision={hivision_quality.status}")
+            except Exception as exc:
+                logger.warning('Hivision engine failed, keep legacy result: %s', exc)
+                comparison_summary.append('hivision=ERROR')
+
+        comparison_summary.append(f"legacy={legacy_quality.status}")
+
+        if mode == 'legacy':
+            pass
+        elif mode == 'hivision' and hivision_result is not None and hivision_quality is not None:
+            selected_engine_name = 'hivision'
+            selected_result = hivision_result
+            selected_quality = hivision_quality
+        elif mode == 'hivision':
+            logger.warning('PHOTO_ENGINE=hivision but hivision failed; fallback legacy')
+        elif mode == 'auto' and hivision_result is not None and hivision_quality is not None:
+            picked = self._pick_best_result(
+                legacy_quality,
+                hivision_quality,
+                primary_name='legacy',
+                secondary_name='hivision',
+            )
+            if picked == 'hivision':
+                selected_engine_name = 'hivision'
+                selected_result = hivision_result
+                selected_quality = hivision_quality
+
+        logger.info('Engine select mode=%s selected=%s compare=%s', mode, selected_engine_name, ', '.join(comparison_summary))
+
+        hd_image = selected_result.hd_image
+        preview_image = selected_result.preview_image
+        preview_quality = selected_result.preview_quality
 
         hd_path = self.storage.hd_path(task_id, 'id_photo_hd.png')
         preview_path = self.storage.preview_path(task_id, 'id_photo_preview.jpg')
@@ -342,51 +358,37 @@ class PhotoProcessor:
 
         intermediate_files = None
         if self.settings.save_intermediate:
-            if output_quality.cloth_pollution_mask is not None:
-                save_image(output_quality.cloth_pollution_mask, self.storage.temp_path(task_id, 'cloth_pollution_mask.png'))
-            if output_quality.hair_gap_residue_mask is not None:
-                save_image(output_quality.hair_gap_residue_mask, self.storage.temp_path(task_id, 'hair_gap_residue_mask.png'))
+            all_debug = {}
+            all_debug.update(legacy_result.debug_images)
+            if hivision_result is not None:
+                all_debug.update(hivision_result.debug_images)
+            all_debug.update(selected_result.debug_images)
+            if selected_quality.cloth_pollution_mask is not None:
+                all_debug['cloth_pollution_mask.png'] = selected_quality.cloth_pollution_mask
+            if selected_quality.hair_gap_residue_mask is not None:
+                all_debug['hair_gap_residue_mask.png'] = selected_quality.hair_gap_residue_mask
+            for name, img in all_debug.items():
+                save_image(img, self.storage.temp_path(task_id, name))
+
             intermediate_files = {}
-            for name in (
-                'foreground.png',
-                'refined_alpha.png',
-                'trimap.png',
-                'refined_foreground.png',
-                'foreground_decontaminated.png',
-                'guided_alpha.png',
-                'hair_internal_holes_mask.png',
-                'hair_gap_filled_alpha.png',
-                'border_residue_mask.png',
-                'hair_gap_fixed_output.png',
-                'edge_band_mask.png',
-                'cropped_rgba.png',
-                'cropped_rgba_legacy.png',
-                'cropped_rgba_decontaminated.png',
-                'hd_legacy.png',
-                'hd_decontaminated.png',
-                'cloth_pollution_mask.png',
-                'hair_gap_residue_mask.png',
-            ):
+            for name in sorted(all_debug.keys()):
                 path = self.storage.temp_path(task_id, name)
                 if path.exists():
                     intermediate_files[name] = self._file_info(path)
-            if intermediate_files:
-                logger.warning('================ INTERMEDIATE ARTIFACTS (task_id=%s) ================', task_id)
-                for name, file_info in intermediate_files.items():
-                    logger.warning('INTERMEDIATE %-30s path=%s url=%s', name, file_info.path, file_info.url)
-                logger.warning('================ END INTERMEDIATE ARTIFACTS (task_id=%s) ============', task_id)
 
         warnings = detect_result.warnings.copy()
-        warnings.extend(output_quality.warnings)
+        warnings.extend(selected_quality.warnings)
+        if comparison_summary:
+            warnings.append(f"engineComparison: {'; '.join(comparison_summary)}")
         detect_summary = self._build_detect_data(detect_result)
         compliance_status = self._to_compliance_status(detect_result.status)
         compliance_message = self._compliance_message(compliance_status)
         compliance_details = detect_summary.complianceDetails
-        if output_quality.status == 'FAIL':
+        if selected_quality.status == 'FAIL':
             final_quality_status = 'FAIL'
             final_quality_message = '输出图存在明显异常，不可用于正式证件照'
             safe_to_submit = False
-        elif detect_result.status == 'PASS' and output_quality.status == 'PASS':
+        elif detect_result.status == 'PASS' and selected_quality.status == 'PASS':
             final_quality_status = 'PASS'
             final_quality_message = '输入与输出质量均通过，可用于正式证件照提交'
             safe_to_submit = True
@@ -410,16 +412,16 @@ class PhotoProcessor:
             warnings=warnings,
             detect=detect_summary,
             detectSummary=detect_summary,
-            primaryIssue=output_quality.primary_issue or detect_result.primary_issue,
-            primaryMessage=output_quality.primary_message or detect_result.primary_message,
+            primaryIssue=selected_quality.primary_issue or detect_result.primary_issue,
+            primaryMessage=selected_quality.primary_message or detect_result.primary_message,
             secondaryWarnings=detect_result.secondary_warnings,
             qualityStatus=final_quality_status,
             qualityMessage=final_quality_message,
-            outputQualityStatus=output_quality.status,
-            outputQualityMessage=output_quality.primary_message or '输出成片质量正常',
-            outputReasonCodes=output_quality.reason_codes,
-            allowPreviewSave=output_quality.status != 'FAIL',
-            allowHdSave=output_quality.status == 'PASS' and detect_result.status == 'PASS',
+            outputQualityStatus=selected_quality.status,
+            outputQualityMessage=selected_quality.primary_message or '输出成片质量正常',
+            outputReasonCodes=selected_quality.reason_codes,
+            allowPreviewSave=selected_quality.status != 'FAIL',
+            allowHdSave=selected_quality.status == 'PASS' and detect_result.status == 'PASS',
             previewWidth=preview_image.width,
             previewHeight=preview_image.height,
             previewFormat='JPEG',
@@ -430,12 +432,12 @@ class PhotoProcessor:
             hdQuality=100,
             intermediateFiles=intermediate_files,
             processStatus='generated',
-            processMessage='图片已生成',
+            processMessage=f'图片已生成（engine={selected_engine_name}）',
             complianceStatus=compliance_status,
             complianceMessage=compliance_message,
             complianceDetails=compliance_details,
             safeToSubmit=safe_to_submit,
-            outputQualityMetrics=output_quality.metrics,
+            outputQualityMetrics=selected_quality.metrics,
         )
 
     def layout_from_photo(self, photo: Image.Image, spec: PhotoSpec, paper: str) -> tuple[Image.Image, int]:
