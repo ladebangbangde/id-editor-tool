@@ -35,6 +35,8 @@ class MatteRefineService:
     UNKNOWN_TRIMAP_MIN = 0.08
     UNKNOWN_TRIMAP_MAX = 0.92
     EDGE_DECONTAMINATION_STRENGTH = 0.62
+    CORE_FOREGROUND_ALPHA = 0.96
+    EDGE_PROPAGATION_BLEND = 0.45
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -137,6 +139,35 @@ class MatteRefineService:
         pymatting_fg = self._estimate_foreground_ml(source_rgb=source_rgb, alpha=alpha)
         if pymatting_fg is not None:
             estimated_fg = np.clip(estimated_fg * 0.25 + pymatting_fg * 0.75, 0.0, 1.0)
+
+        core_mask = (alpha >= self.CORE_FOREGROUND_ALPHA).astype(np.float32)
+        if np.any(core_mask):
+            propagated_core = np.zeros_like(estimated_fg, dtype=np.float32)
+            core_weight = filters.gaussian(core_mask, sigma=5.0, preserve_range=True).astype(np.float32)
+            core_weight = np.clip(core_weight, 1e-4, None)
+            for channel in range(3):
+                weighted_channel = filters.gaussian(
+                    fg_rgb[:, :, channel] * core_mask,
+                    sigma=5.0,
+                    preserve_range=True,
+                ).astype(np.float32)
+                propagated_core[:, :, channel] = weighted_channel / core_weight
+            propagated_core = np.clip(propagated_core, 0.0, 1.0)
+            edge_propagation_strength = (edge * (1.0 - alpha) * self.EDGE_PROPAGATION_BLEND)[..., None]
+            estimated_fg = estimated_fg * (1.0 - edge_propagation_strength) + propagated_core * edge_propagation_strength
+
+        bg_mask = alpha <= 0.03
+        if np.any(bg_mask):
+            bg_color = np.mean(source_rgb[bg_mask], axis=0)
+            bg_norm = float(np.linalg.norm(bg_color))
+            if bg_norm > 1e-6:
+                bg_dir = bg_color / bg_norm
+                flat_estimated = estimated_fg.reshape(-1, 3)
+                projection = np.maximum(0.0, flat_estimated @ bg_dir)
+                remove_strength = (edge * (1.0 - alpha) * 0.30).reshape(-1, 1)
+                flat_estimated = np.clip(flat_estimated - remove_strength * projection[:, None] * bg_dir[None, :], 0.0, 1.0)
+                estimated_fg = flat_estimated.reshape(estimated_fg.shape)
+
         blend_strength = (edge * (1.0 - alpha) * self.EDGE_DECONTAMINATION_STRENGTH)[..., None]
         decontaminated = fg_rgb * (1.0 - blend_strength) + estimated_fg * blend_strength
         decontaminated = np.clip(decontaminated, 0.0, 1.0)
