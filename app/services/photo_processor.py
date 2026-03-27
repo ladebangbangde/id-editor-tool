@@ -25,7 +25,6 @@ from app.schemas.detect import DetectData
 from app.schemas.generate import GenerateData
 from app.schemas.layout import LayoutData
 from app.services.background import BackgroundService
-from app.services.engines.hivision_engine import HivisionPhotoGenerationEngine
 from app.services.engines.legacy_engine import LegacyPhotoGenerationEngine
 from app.services.cropper import CropperService
 from app.services.enhancer import EnhancerService
@@ -64,16 +63,6 @@ class PhotoProcessor:
             enhancer=self.enhancer,
             preview_builder=self._build_preview_image,
             settings=self.settings,
-        )
-        self.hivision_engine = HivisionPhotoGenerationEngine(
-            segmenter=self.segmenter,
-            matte_refiner=self.matte_refiner,
-            cropper=self.cropper,
-            background=self.background,
-            enhancer=self.enhancer,
-            preview_builder=self._build_preview_image,
-            settings=self.settings,
-            logger=logger,
         )
 
     async def read_upload(self, file: UploadFile) -> tuple[bytes, Image.Image]:
@@ -234,24 +223,6 @@ class PhotoProcessor:
         preview_quality = min(self.settings.preview_quality, 75)
         return preview_image, preview_quality
 
-
-    def _pick_best_result(self, primary_quality, secondary_quality, *, primary_name: str, secondary_name: str) -> str:
-        severity_rank = {'PASS': 0, 'WARNING': 1, 'FAIL': 2}
-        p = severity_rank.get(primary_quality.status, 2)
-        s = severity_rank.get(secondary_quality.status, 2)
-        if s < p:
-            return secondary_name
-        if s > p:
-            return primary_name
-
-        def critical_count(q):
-            keys = {'FACE_COLOR_POLLUTION', 'CLOTH_COLOR_POLLUTION', 'HAIR_GAP_BACKGROUND_RESIDUE', 'BORDER_BACKGROUND_RESIDUE'}
-            return len(keys.intersection(set(q.reason_codes)))
-
-        if critical_count(secondary_quality) < critical_count(primary_quality):
-            return secondary_name
-        return primary_name
-
     def generate(
         self,
         image: Image.Image,
@@ -279,47 +250,17 @@ class PhotoProcessor:
             face_box=detect_result.primary_face,
         )
 
-        legacy_result = self.legacy_engine.generate(payload)
-        legacy_quality = self.output_quality.evaluate(
+        logger.info('Formal generation kernel=legacy (hivision disabled in production pipeline)')
+        selected_result = self.legacy_engine.generate(payload)
+        selected_quality = self.output_quality.evaluate(
             source_image=image,
-            output_image=legacy_result.hd_image,
-            foreground_rgba=legacy_result.foreground_rgba,
+            output_image=selected_result.hd_image,
+            foreground_rgba=selected_result.foreground_rgba,
             face_box=detect_result.primary_face,
             background_color=background_color,
         )
-
-        selected_engine_name = 'legacy'
-        selected_result = legacy_result
-        selected_quality = legacy_quality
-        comparison_summary: list[str] = [f"legacy={legacy_quality.status}"]
-
-        hivision_result = None
-        hivision_quality = None
-        try:
-            hivision_result = self.hivision_engine.generate(payload)
-            hivision_quality = self.output_quality.evaluate(
-                source_image=image,
-                output_image=hivision_result.hd_image,
-                foreground_rgba=hivision_result.foreground_rgba,
-                face_box=detect_result.primary_face,
-                background_color=background_color,
-            )
-            comparison_summary.insert(0, f"hivision={hivision_quality.status}")
-            picked = self._pick_best_result(
-                legacy_quality,
-                hivision_quality,
-                primary_name='legacy',
-                secondary_name='hivision',
-            )
-            if picked == 'hivision':
-                selected_engine_name = 'hivision'
-                selected_result = hivision_result
-                selected_quality = hivision_quality
-        except Exception as exc:
-            logger.warning('Hivision engine failed, keep legacy result: %s', exc)
-            comparison_summary.insert(0, 'hivision=ERROR')
-
-        logger.info('Engine select default=hivision selected=%s compare=%s', selected_engine_name, ', '.join(comparison_summary))
+        selected_engine_name = selected_result.engine_name
+        logger.info('Engine select selected=%s compare=legacy-only', selected_engine_name)
 
         hd_image = selected_result.hd_image
         preview_image = selected_result.preview_image
@@ -334,11 +275,7 @@ class PhotoProcessor:
 
         intermediate_files = None
         if self.settings.save_intermediate:
-            all_debug = {}
-            all_debug.update(legacy_result.debug_images)
-            if hivision_result is not None:
-                all_debug.update(hivision_result.debug_images)
-            all_debug.update(selected_result.debug_images)
+            all_debug = dict(selected_result.debug_images)
             if selected_quality.cloth_pollution_mask is not None:
                 all_debug['cloth_pollution_mask.png'] = selected_quality.cloth_pollution_mask
             if selected_quality.hair_gap_residue_mask is not None:
@@ -354,8 +291,7 @@ class PhotoProcessor:
 
         warnings = detect_result.warnings.copy()
         warnings.extend(selected_quality.warnings)
-        if comparison_summary:
-            warnings.append(f"engineComparison: {'; '.join(comparison_summary)}")
+        warnings.append('engineComparison: legacy-only')
         detect_summary = self._build_detect_data(detect_result)
         compliance_status = self._to_compliance_status(detect_result.status)
         compliance_message = self._compliance_message(compliance_status)

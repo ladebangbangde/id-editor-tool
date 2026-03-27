@@ -180,7 +180,6 @@ MIN_IMAGE_WIDTH=400
 MIN_IMAGE_HEIGHT=400
 PREVIEW_QUALITY=90
 HD_QUALITY=95
-HIVISION_REPO_PATH=
 ```
 
 关键配置项：
@@ -192,8 +191,6 @@ HIVISION_REPO_PATH=
 - `MAX_UPLOAD_SIZE_MB`：最大上传大小
 - `DEFAULT_BACKGROUND_COLOR`：默认底色
 - `DEFAULT_SIZE_KEY`：默认证件照规格
-
-- `HIVISION_REPO_PATH`：可选，本地 HivisionIDPhotos 代码路径（库级接入，不启动额外服务）。
 
 ## 证件照规格
 
@@ -554,7 +551,7 @@ SAVE_INTERMEDIATE=true
 ### 4. 首次运行抠图较慢
 
 - `rembg` / `onnxruntime` 首次初始化通常比后续慢
-- Docker 或低配机器首次耗时更明显
+- Docker 镜像构建阶段会预置 `u2net.onnx`，运行时默认不再联网下载模型
 
 ### 5. Docker 中看不到输出图
 

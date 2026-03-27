@@ -48,6 +48,20 @@ class MatteRefineService:
     def __init__(self) -> None:
         self.settings = get_settings()
 
+    @staticmethod
+    def _prepare_pymatting_rgb(rgb: np.ndarray) -> np.ndarray:
+        rgb_prepared = np.ascontiguousarray(np.clip(rgb, 0.0, 1.0).astype(np.float64, copy=False))
+        if rgb_prepared.ndim != 3 or rgb_prepared.shape[2] != 3:
+            raise ValueError(f'Invalid rgb shape for pymatting: {rgb_prepared.shape}')
+        return rgb_prepared
+
+    @staticmethod
+    def _prepare_pymatting_alpha(alpha_like: np.ndarray) -> np.ndarray:
+        alpha_prepared = np.ascontiguousarray(np.clip(alpha_like, 0.0, 1.0).astype(np.float64, copy=False))
+        if alpha_prepared.ndim != 2:
+            raise ValueError(f'Invalid alpha/trimap shape for pymatting: {alpha_prepared.shape}')
+        return alpha_prepared
+
     def _cv2(self):
         try:
             import cv2
@@ -60,7 +74,11 @@ class MatteRefineService:
         try:
             from pymatting import estimate_alpha_cf
 
-            return estimate_alpha_cf(rgb, trimap)
+            rgb_prepared = self._prepare_pymatting_rgb(rgb)
+            trimap_prepared = self._prepare_pymatting_alpha(trimap)
+            alpha_refined = estimate_alpha_cf(rgb_prepared, trimap_prepared)
+            logger.info('pymatting alpha refine active')
+            return np.clip(alpha_refined.astype(np.float32), 0.0, 1.0)
         except Exception as exc:
             logger.warning('pymatting unavailable/fail, fallback to original alpha: %s', exc)
             # 回退时 unknown 区域使用 trimap 中值，保证流程稳定。
@@ -70,7 +88,10 @@ class MatteRefineService:
         try:
             from pymatting import estimate_foreground_ml
 
-            foreground = estimate_foreground_ml(source_rgb, alpha)
+            rgb_prepared = self._prepare_pymatting_rgb(source_rgb)
+            alpha_prepared = self._prepare_pymatting_alpha(alpha)
+            foreground = estimate_foreground_ml(rgb_prepared, alpha_prepared)
+            logger.info('pymatting foreground estimation active')
             return np.clip(foreground.astype(np.float32), 0.0, 1.0)
         except Exception as exc:
             logger.warning('pymatting foreground estimate unavailable/fail: %s', exc)

@@ -20,8 +20,10 @@ class LegacyPhotoGenerationEngine(PhotoGenerationEngine):
     def generate(self, payload: EngineInput) -> EngineResult:
         rgba_foreground = self.segmenter.remove_background(payload.source_image)
         refined = self.matte_refiner.refine(payload.source_image, rgba_foreground)
-
-        cropped_rgba = self.cropper.crop(refined.rgba, payload.spec, payload.face_box)
+        effective_rgba = refined.rgba
+        if self.settings.enable_decontaminated_output_as_default and refined.decontaminated_rgba is not None:
+            effective_rgba = refined.decontaminated_rgba
+        cropped_rgba = self.cropper.crop(effective_rgba, payload.spec, payload.face_box)
         hd_image = self.background.apply(cropped_rgba, payload.background_color)
         if payload.enhance:
             hd_image = self.enhancer.enhance(hd_image)
