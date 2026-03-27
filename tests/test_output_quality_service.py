@@ -92,3 +92,30 @@ def test_output_quality_detects_cloth_color_pollution_fail() -> None:
 
     assert result.status == 'FAIL'
     assert 'CLOTH_COLOR_POLLUTION' in result.reason_codes
+
+
+def test_output_quality_detects_hair_gap_background_residue() -> None:
+    service = OutputQualityService()
+    src = Image.new('RGB', (220, 280), (200, 195, 190))
+    out = np.zeros((280, 220, 3), dtype=np.uint8)
+    out[:, :] = (200, 195, 190)
+    out[20:120, 55:165] = (70, 65, 60)
+    for y in range(40, 95, 10):
+        for x in range(75, 150, 12):
+            out[y:y + 2, x:x + 2] = (245, 245, 245)
+    output = Image.fromarray(out, mode='RGB')
+
+    fg = np.zeros((280, 220, 4), dtype=np.uint8)
+    fg[:, :, :3] = 120
+    fg[:, :, 3] = 255
+    foreground = Image.fromarray(fg, mode='RGBA')
+
+    result = service.evaluate(
+        source_image=src,
+        output_image=output,
+        foreground_rgba=foreground,
+        face_box={'x': 70, 'y': 65, 'width': 80, 'height': 110},
+        background_color='red',
+    )
+
+    assert 'HAIR_GAP_BACKGROUND_RESIDUE' in (result.reason_codes + result.warnings)

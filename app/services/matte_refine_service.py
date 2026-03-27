@@ -20,6 +20,8 @@ class MatteRefineResult:
     decontaminated_rgba: Image.Image | None = None
     edge_band_mask: Image.Image | None = None
     guided_alpha: Image.Image | None = None
+    hair_internal_holes_mask: Image.Image | None = None
+    hair_gap_filled_alpha: Image.Image | None = None
 
 
 class MatteRefineService:
@@ -37,6 +39,8 @@ class MatteRefineService:
     EDGE_DECONTAMINATION_STRENGTH = 0.62
     CORE_FOREGROUND_ALPHA = 0.96
     EDGE_PROPAGATION_BLEND = 0.45
+    HAIR_HOLE_MAX_AREA_RATIO = 0.0018
+    HAIR_HOLE_MIN_AREA = 3
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -123,6 +127,54 @@ class MatteRefineService:
         edge_from_trimap = (trimap > self.UNKNOWN_TRIMAP_MIN) & (trimap < self.UNKNOWN_TRIMAP_MAX)
         return (edge_from_alpha | edge_from_trimap).astype(np.float32)
 
+    def _detect_hair_internal_holes(self, source_rgb: np.ndarray, alpha_refined: np.ndarray) -> np.ndarray:
+        alpha = np.clip(alpha_refined.astype(np.float32), 0.0, 1.0)
+        fg_core = alpha > 0.72
+        if np.count_nonzero(fg_core) < 50:
+            return np.zeros_like(alpha, dtype=np.float32)
+
+        filled_fg = morphology.remove_small_holes(fg_core, area_threshold=300)
+        hole_candidates = filled_fg & (~fg_core)
+        if not np.any(hole_candidates):
+            return np.zeros_like(alpha, dtype=np.float32)
+
+        coords = np.argwhere(fg_core)
+        y0, x0 = coords.min(axis=0)
+        y1, x1 = coords.max(axis=0)
+        h = max(1, y1 - y0 + 1)
+        max_hole_area = max(self.HAIR_HOLE_MIN_AREA, int(alpha.size * self.HAIR_HOLE_MAX_AREA_RATIO))
+        labels = measure.label(hole_candidates, connectivity=2)
+        selected = np.zeros_like(alpha, dtype=np.float32)
+
+        for region in measure.regionprops(labels):
+            if region.area < self.HAIR_HOLE_MIN_AREA or region.area > max_hole_area:
+                continue
+            cy, cx = region.centroid
+            if cy > y0 + h * 0.72:
+                continue
+            comp = labels == region.label
+            if not np.any(comp):
+                continue
+            mean_luma = float(np.mean(source_rgb[comp]))
+            if mean_luma < 0.68:
+                continue
+
+            ring = morphology.binary_dilation(comp, morphology.disk(2)) & (~comp)
+            ring_luma = float(np.mean(source_rgb[ring])) if np.any(ring) else 1.0
+            ring_fg_ratio = float(np.mean(alpha[ring] > 0.62)) if np.any(ring) else 0.0
+            if ring_luma > 0.58 or ring_fg_ratio < 0.50:
+                continue
+            selected[comp] = 1.0
+
+        return selected
+
+    def _fill_hair_gap_background(self, alpha_refined: np.ndarray, hair_holes_mask: np.ndarray) -> np.ndarray:
+        alpha = np.clip(alpha_refined.astype(np.float32), 0.0, 1.0).copy()
+        holes = hair_holes_mask > 0.5
+        if np.any(holes):
+            alpha[holes] = 0.0
+        return alpha
+
     def _decontaminate_foreground_rgb(
         self,
         source_rgb: np.ndarray,
@@ -189,15 +241,19 @@ class MatteRefineService:
         alpha_refined = self._postprocess_alpha(alpha_refined)
         alpha_refined, guided_alpha_debug = self._guided_refine_alpha(source_rgb=rgb, alpha_refined=alpha_refined)
 
+        hair_holes_mask = self._detect_hair_internal_holes(source_rgb=rgb, alpha_refined=alpha_refined)
+        alpha_refined_filled = self._fill_hair_gap_background(alpha_refined=alpha_refined, hair_holes_mask=hair_holes_mask)
+        alpha_filled_u8 = (alpha_refined_filled * 255.0).clip(0, 255).astype(np.uint8)
+
         refined_rgba = fg_rgba_np.copy()
-        refined_rgba[:, :, 3] = (alpha_refined * 255.0).clip(0, 255).astype(np.uint8)
-        edge_band_mask = self._build_edge_band_mask(alpha_u8=alpha_u8, trimap=trimap)
+        refined_rgba[:, :, 3] = alpha_filled_u8
+        edge_band_mask = self._build_edge_band_mask(alpha_u8=alpha_filled_u8, trimap=trimap)
         decontaminated_rgba = None
         if self.settings.enable_foreground_decontamination:
             decontaminated_rgba = self._decontaminate_foreground_rgb(
                 source_rgb=rgb,
                 fg_rgba=refined_rgba,
-                alpha_refined=alpha_refined,
+                alpha_refined=alpha_refined_filled,
                 edge_band_mask=edge_band_mask,
             )
         else:
@@ -205,7 +261,7 @@ class MatteRefineService:
 
         return MatteRefineResult(
             rgba=Image.fromarray(refined_rgba, mode='RGBA'),
-            alpha=Image.fromarray(refined_rgba[:, :, 3], mode='L'),
+            alpha=Image.fromarray(alpha_filled_u8, mode='L'),
             trimap=Image.fromarray((trimap * 255.0).clip(0, 255).astype(np.uint8), mode='L'),
             decontaminated_rgba=Image.fromarray(decontaminated_rgba, mode='RGBA') if decontaminated_rgba is not None else None,
             edge_band_mask=Image.fromarray((edge_band_mask * 255.0).astype(np.uint8), mode='L'),
@@ -214,4 +270,6 @@ class MatteRefineService:
                 if guided_alpha_debug is not None
                 else None
             ),
+            hair_internal_holes_mask=Image.fromarray((hair_holes_mask * 255.0).astype(np.uint8), mode='L'),
+            hair_gap_filled_alpha=Image.fromarray(alpha_filled_u8, mode='L'),
         )

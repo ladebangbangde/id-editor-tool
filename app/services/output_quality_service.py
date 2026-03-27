@@ -7,6 +7,7 @@ from PIL import Image
 from skimage.measure import perimeter
 from skimage.color import rgb2hsv
 from skimage.measure import find_contours
+from skimage import measure, morphology
 
 from app.services.photo_precheck_service import FAIL, PASS, WARNING
 from app.core.config import get_settings
@@ -21,6 +22,7 @@ class OutputQualityResult:
     primary_message: str | None = None
     metrics: dict[str, float] = field(default_factory=dict)
     cloth_pollution_mask: Image.Image | None = None
+    hair_gap_residue_mask: Image.Image | None = None
 
 
 class OutputQualityService:
@@ -36,6 +38,8 @@ class OutputQualityService:
     FEATURE_POLLUTION_WARN = 0.10
     CLOTH_POLLUTION_FAIL = 0.27
     CLOTH_POLLUTION_WARN = 0.14
+    HAIR_GAP_RESIDUE_FAIL = 0.010
+    HAIR_GAP_RESIDUE_WARN = 0.004
 
     ISSUE_PRIORITY = {
         'FACE_COLOR_POLLUTION': 100,
@@ -43,6 +47,7 @@ class OutputQualityService:
         'SKIN_TONE_ABNORMAL': 90,
         'FOREGROUND_EDGE_BROKEN': 85,
         'CLOTH_COLOR_POLLUTION': 84,
+        'HAIR_GAP_BACKGROUND_RESIDUE': 83,
     }
 
     ISSUE_MESSAGES = {
@@ -51,6 +56,7 @@ class OutputQualityService:
         'FOREGROUND_EDGE_BROKEN': '人物边界质量异常，头发或肩部边缘存在破损风险',
         'FACIAL_FEATURE_CORRUPTED': '五官区域疑似受污染，建议重新处理或更换原图',
         'CLOTH_COLOR_POLLUTION': '衣领/肩部检测到明显底色侵入，建议切换更稳健前景保护模式',
+        'HAIR_GAP_BACKGROUND_RESIDUE': '头发内部细缝存在漏底残留，建议使用更干净原图或重新抠图',
     }
 
     def __init__(self) -> None:
@@ -133,6 +139,7 @@ class OutputQualityService:
         warnings: list[str] = []
         metrics: dict[str, float] = {}
         cloth_pollution_mask: Image.Image | None = None
+        hair_gap_residue_mask: Image.Image | None = None
 
         if safe_box is not None:
             face_core, features_mask = self._face_region_masks(safe_box, (h, w))
@@ -224,6 +231,46 @@ class OutputQualityService:
                         elif medium_risk:
                             warnings.append('CLOTH_COLOR_POLLUTION')
 
+                hair_top = int(max(0, safe_box['y'] - safe_box['height'] * 0.60))
+                hair_bottom = int(min(h, safe_box['y'] + safe_box['height'] * 0.45))
+                hair_left = int(max(0, safe_box['x'] - safe_box['width'] * 0.28))
+                hair_right = int(min(w, safe_box['x'] + safe_box['width'] * 1.28))
+                if hair_bottom > hair_top and hair_right > hair_left:
+                    hair_region = np.zeros((h, w), dtype=bool)
+                    hair_region[hair_top:hair_bottom, hair_left:hair_right] = True
+                    hair_rgb = out_rgb.astype(np.float32)
+                    if cv2 is not None:
+                        hsv_full = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2HSV).astype(np.float32)
+                        sat = hsv_full[:, :, 1] / 255.0
+                    else:
+                        sat = rgb2hsv(out_rgb.astype(np.float32) / 255.0)[:, :, 1].astype(np.float32)
+
+                    bright_low_sat = (np.mean(hair_rgb, axis=2) > 214.0) & (sat < 0.16)
+                    candidate = hair_region & bright_low_sat
+                    labels = measure.label(candidate, connectivity=2)
+                    residue_mask = np.zeros((h, w), dtype=np.uint8)
+                    for region in measure.regionprops(labels):
+                        if region.area < 2 or region.area > 140:
+                            continue
+                        comp = labels == region.label
+                        ring = morphology.binary_dilation(comp, morphology.disk(2)) & (~comp)
+                        if not np.any(ring):
+                            continue
+                        ring_fg_ratio = float(np.mean(alpha[ring] > 85))
+                        ring_dark_ratio = float(np.mean(np.mean(hair_rgb[ring], axis=1) < 165.0))
+                        if ring_fg_ratio > 0.42 and ring_dark_ratio > 0.28:
+                            residue_mask[comp] = 255
+
+                    if np.any(hair_region):
+                        hair_gap_ratio = float(np.mean(residue_mask[hair_region] > 0))
+                        metrics['hair_gap_residue_ratio'] = hair_gap_ratio
+                        if np.any(residue_mask):
+                            hair_gap_residue_mask = Image.fromarray(residue_mask, mode='L')
+                        if hair_gap_ratio >= self.HAIR_GAP_RESIDUE_FAIL:
+                            reason_codes.append('HAIR_GAP_BACKGROUND_RESIDUE')
+                        elif hair_gap_ratio >= self.HAIR_GAP_RESIDUE_WARN:
+                            warnings.append('HAIR_GAP_BACKGROUND_RESIDUE')
+
         edge_band = (alpha > 8) & (alpha < 248)
         edge_noise = 0.0
         if np.any(edge_band):
@@ -261,6 +308,7 @@ class OutputQualityService:
                 primary_message=self.ISSUE_MESSAGES.get(primary),
                 metrics=metrics,
                 cloth_pollution_mask=cloth_pollution_mask,
+                hair_gap_residue_mask=hair_gap_residue_mask,
             )
 
         if warnings:
@@ -273,6 +321,7 @@ class OutputQualityService:
                 primary_message=self.ISSUE_MESSAGES.get(primary),
                 metrics=metrics,
                 cloth_pollution_mask=cloth_pollution_mask,
+                hair_gap_residue_mask=hair_gap_residue_mask,
             )
 
         return OutputQualityResult(
@@ -283,4 +332,5 @@ class OutputQualityService:
             primary_message='输出成片质量正常',
             metrics=metrics,
             cloth_pollution_mask=cloth_pollution_mask,
+            hair_gap_residue_mask=hair_gap_residue_mask,
         )
