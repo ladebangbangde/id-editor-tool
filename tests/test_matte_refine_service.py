@@ -22,3 +22,16 @@ def test_matte_refine_generates_refined_rgba_and_trimap() -> None:
     alpha_np = np.array(result.alpha)
     assert alpha_np.max() > 0
     assert alpha_np[32, 32] >= 120
+
+
+def test_matte_refine_decontamination_respects_flag() -> None:
+    service = MatteRefineService()
+    service.settings.enable_foreground_decontamination = False
+    src = Image.new('RGB', (32, 32), 'white')
+    rgba = np.zeros((32, 32, 4), dtype=np.uint8)
+    rgba[6:28, 8:24, :3] = 150
+    rgba[6:28, 8:24, 3] = 255
+    fg = Image.fromarray(rgba, mode='RGBA')
+
+    result = service.refine(src, fg)
+    assert result.decontaminated_rgba is None

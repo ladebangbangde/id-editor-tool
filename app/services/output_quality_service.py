@@ -195,6 +195,7 @@ class OutputQualityService:
                     cloth_alpha_mask = cloth_mask & (alpha > 35)
                     if np.any(cloth_alpha_mask):
                         cloth_pixels = out_rgb[cloth_alpha_mask]
+                        src_cloth_pixels = src_rgb[cloth_alpha_mask] if src_rgb.shape[:2] == out_rgb.shape[:2] else cloth_pixels
                         cr = cloth_pixels[:, 0].astype(np.float32)
                         cg = cloth_pixels[:, 1].astype(np.float32)
                         cb = cloth_pixels[:, 2].astype(np.float32)
@@ -204,15 +205,23 @@ class OutputQualityService:
                             contamination_strength = cb - (cr + cg) * 0.5
                         contamination_binary = contamination_strength > 24.0
                         pollution_ratio = float(np.mean(contamination_binary))
+                        src_mean = np.mean(src_cloth_pixels.astype(np.float32), axis=0)
+                        out_mean = np.mean(cloth_pixels.astype(np.float32), axis=0)
+                        cloth_color_shift = float(np.linalg.norm(out_mean - src_mean))
+                        light_cloth_ratio = float(np.mean(np.mean(src_cloth_pixels.astype(np.float32), axis=1) > 150.0))
                         metrics['cloth_pollution_ratio'] = pollution_ratio
+                        metrics['cloth_color_shift'] = cloth_color_shift
+                        metrics['light_cloth_ratio'] = light_cloth_ratio
 
                         full_mask = np.zeros((h, w), dtype=np.uint8)
                         full_mask[cloth_alpha_mask] = (contamination_binary.astype(np.uint8) * 255)
                         cloth_pollution_mask = Image.fromarray(full_mask, mode='L')
 
-                        if pollution_ratio >= self.CLOTH_POLLUTION_FAIL:
+                        high_risk = pollution_ratio >= self.CLOTH_POLLUTION_FAIL or (pollution_ratio >= self.CLOTH_POLLUTION_WARN and cloth_color_shift > 28.0 and light_cloth_ratio > 0.35)
+                        medium_risk = pollution_ratio >= self.CLOTH_POLLUTION_WARN or (cloth_color_shift > 18.0 and light_cloth_ratio > 0.35)
+                        if high_risk:
                             warnings.append('CLOTH_COLOR_POLLUTION')
-                        elif pollution_ratio >= self.CLOTH_POLLUTION_WARN:
+                        elif medium_risk:
                             warnings.append('CLOTH_COLOR_POLLUTION')
 
         edge_band = (alpha > 8) & (alpha < 248)
