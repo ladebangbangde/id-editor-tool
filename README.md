@@ -22,7 +22,7 @@
 第一阶段优先保证“**可运行、可测试、可看到效果**”的主链路打通：
 
 - 人脸检测：`MediaPipe Face Detection`（CPU，无需 GPU）。
-- 抠图：`rembg` + `onnxruntime` 本地离线推理。
+- 抠图：默认使用百度 AI 人像分割（`foreground` 透明前景图）；仅在 `BAIDU_SEGMENTATION_ENABLED=false` 时才走 rembg 调试链路。
 - 换底：Pillow 合成白/蓝/红底。
 - 标准裁剪：基于人脸框和尺寸比例的规则裁剪。
 - 增强：轻量亮度/对比度/锐化处理。
@@ -172,6 +172,12 @@ HD_DIR=hd
 PRINT_DIR=print
 TEMP_DIR=temp
 SAVE_INTERMEDIATE=true
+BAIDU_SEGMENTATION_ENABLED=true
+BAIDU_API_KEY=
+BAIDU_SECRET_KEY=
+BAIDU_OAUTH_URL=https://aip.baidubce.com/oauth/2.0/token
+BAIDU_SEGMENTATION_URL=https://aip.baidubce.com/rest/2.0/image-classify/v1/body_seg
+BAIDU_HTTP_TIMEOUT_SEC=15
 MAX_UPLOAD_SIZE_MB=15
 DEFAULT_BACKGROUND_COLOR=blue
 DEFAULT_SIZE_KEY=one_inch
@@ -187,7 +193,9 @@ HD_QUALITY=95
 - `APP_PORT`：服务端口
 - `UPLOAD_ROOT`：容器内共享上传根目录，默认 `/app/uploads`
 - `STATIC_MOUNT_PATH`：静态访问前缀，默认 `/uploads`
-- `SAVE_INTERMEDIATE`：是否保存抠图等中间结果
+- `SAVE_INTERMEDIATE`：是否保存抠图等中间结果（包含 `baidu_foreground.png` / `baidu_labelmap.png` / `baidu_scoremap.png`）
+- `BAIDU_SEGMENTATION_ENABLED`：是否启用百度人像分割正式链路（默认 true）
+- `BAIDU_API_KEY` / `BAIDU_SECRET_KEY`：百度鉴权凭据；缺失时会直接报错，不会静默回退
 - `MAX_UPLOAD_SIZE_MB`：最大上传大小
 - `DEFAULT_BACKGROUND_COLOR`：默认底色
 - `DEFAULT_SIZE_KEY`：默认证件照规格

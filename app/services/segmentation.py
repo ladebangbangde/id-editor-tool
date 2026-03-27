@@ -1,9 +1,12 @@
-import numpy as np
-from PIL import Image, ImageFilter
 import os
 
+import numpy as np
+from PIL import Image, ImageFilter
+
 from app.core.config import get_settings
+from app.core.exceptions import AppError
 from app.core.logger import get_logger
+from app.services.baidu_human_segmentation_service import BaiduHumanSegmentationService
 
 logger = get_logger(__name__)
 
@@ -19,48 +22,67 @@ class SegmentationService:
         self.settings = get_settings()
         self._rembg_session = None
         self._rembg_model_path = None
-        self._rembg_fallback_happened = False
+        self._last_debug_images: dict[str, Image.Image] = {}
+        self._baidu_service = BaiduHumanSegmentationService() if self.settings.baidu_segmentation_enabled else None
         self._init_rembg_session()
 
     def _init_rembg_session(self) -> None:
         if remove is None or new_session is None:
-            logger.warning('rembg unavailable, border-based matting fallback enabled')
+            logger.warning('rembg unavailable')
             return
         model_root = os.getenv('U2NET_HOME', '/root/.u2net')
         self._rembg_model_path = f'{model_root}/u2net.onnx'
         if not os.path.exists(self._rembg_model_path):
-            self._rembg_fallback_happened = True
-            logger.warning(
-                'rembg model missing path=%s; runtime download disabled, border-based fallback enabled',
-                self._rembg_model_path,
-            )
+            logger.warning('rembg model missing path=%s', self._rembg_model_path)
             return
         try:
             self._rembg_session = new_session(model_name='u2net')
             logger.info('rembg model loaded model=u2net path=%s', self._rembg_model_path)
         except Exception as exc:
-            logger.warning('rembg session init failed, border-based matting fallback enabled: %s', exc)
+            logger.warning('rembg session init failed: %s', exc)
+
+    def consume_debug_images(self) -> dict[str, Image.Image]:
+        snapshots = dict(self._last_debug_images)
+        self._last_debug_images.clear()
+        return snapshots
 
     def remove_background(self, image: Image.Image) -> Image.Image:
         rgba = image.convert('RGBA')
+        self._last_debug_images = {}
+
+        if self.settings.baidu_segmentation_enabled:
+            if self._baidu_service is None:
+                raise AppError(
+                    code='BAIDU_SEGMENTATION_NOT_INITIALIZED',
+                    message='Baidu segmentation backend is enabled but service is not initialized',
+                    status_code=500,
+                )
+            logger.info('Segmentation backend=baidu start')
+            result = self._baidu_service.segment_human(rgba)
+            self._last_debug_images['baidu_foreground.png'] = result.foreground
+            if result.labelmap is not None:
+                self._last_debug_images['baidu_labelmap.png'] = result.labelmap
+            if result.scoremap is not None:
+                self._last_debug_images['baidu_scoremap.png'] = result.scoremap
+            logger.info('Segmentation backend=baidu success')
+            return result.foreground.convert('RGBA')
+
+        logger.warning('Segmentation backend=rembg (BAIDU_SEGMENTATION_ENABLED=false)')
+        return self._remove_background_with_rembg(rgba)
+
+    def _remove_background_with_rembg(self, image: Image.Image) -> Image.Image:
         if remove is not None and self._rembg_session is not None:
             try:
-                output = remove(rgba, session=self._rembg_session)
-                logger.info(
-                    'rembg remove_background active model=u2net path=%s fallback=%s',
-                    self._rembg_model_path or 'unknown',
-                    self._rembg_fallback_happened,
-                )
+                output = remove(image, session=self._rembg_session)
+                logger.info('rembg remove_background active model=u2net path=%s', self._rembg_model_path or 'unknown')
                 if isinstance(output, Image.Image):
                     return output.convert('RGBA')
                 return Image.open(output).convert('RGBA')
             except Exception as exc:
-                self._rembg_fallback_happened = True
                 logger.warning('rembg failed, falling back to border-based matting: %s', exc)
         else:
-            self._rembg_fallback_happened = True
             logger.warning('rembg session unavailable, falling back to border-based matting')
-        return self._fallback_remove_background(rgba)
+        return self._fallback_remove_background(image)
 
     def _fallback_remove_background(self, image: Image.Image) -> Image.Image:
         rgb = np.asarray(image.convert('RGB')).astype(np.float32)

@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     enable_decontaminated_output_as_default: bool = Field(default=True, alias='ENABLE_DECONTAMINATED_OUTPUT_AS_DEFAULT')
     enable_guided_edge_refinement: bool = Field(default=True, alias='ENABLE_GUIDED_EDGE_REFINEMENT')
 
+    baidu_segmentation_enabled: bool = Field(default=True, alias='BAIDU_SEGMENTATION_ENABLED')
+    baidu_api_key: str = Field(default='', alias='BAIDU_API_KEY')
+    baidu_secret_key: str = Field(default='', alias='BAIDU_SECRET_KEY')
+    baidu_oauth_url: str = Field(default='https://aip.baidubce.com/oauth/2.0/token', alias='BAIDU_OAUTH_URL')
+    baidu_segmentation_url: str = Field(default='https://aip.baidubce.com/rest/2.0/image-classify/v1/body_seg', alias='BAIDU_SEGMENTATION_URL')
+    baidu_http_timeout_sec: float = Field(default=15.0, alias='BAIDU_HTTP_TIMEOUT_SEC')
+
     hivision_repo_path: str = Field(default='', alias='HIVISION_REPO_PATH')
     max_upload_size_mb: int = Field(default=15, alias='MAX_UPLOAD_SIZE_MB')
     default_background_color: str = Field(default='blue', alias='DEFAULT_BACKGROUND_COLOR')
