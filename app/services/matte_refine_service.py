@@ -44,6 +44,9 @@ class MatteRefineService:
     HAIR_HOLE_MIN_AREA = 3
     BORDER_RESIDUE_COLOR_DIST = 0.16
     BORDER_RESIDUE_MIN_AREA_RATIO = 0.0025
+    ALPHA_ROI_PADDING = 20
+    FOREGROUND_ROI_PADDING = 14
+    MIN_ROI_PIXELS_FOR_LOCAL_SOLVE = 120
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -84,13 +87,57 @@ class MatteRefineService:
             # 回退时 unknown 区域使用 trimap 中值，保证流程稳定。
             return np.where(trimap >= 0.99, 1.0, np.where(trimap <= 0.01, 0.0, 0.5)).astype(np.float32)
 
-    def _estimate_foreground_ml(self, source_rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray | None:
+    @staticmethod
+    def _mask_bbox(mask: np.ndarray, padding: int) -> tuple[int, int, int, int] | None:
+        coords = np.argwhere(mask)
+        if coords.size == 0:
+            return None
+        y0, x0 = coords.min(axis=0)
+        y1, x1 = coords.max(axis=0)
+        h, w = mask.shape
+        y0 = max(0, int(y0) - padding)
+        x0 = max(0, int(x0) - padding)
+        y1 = min(h, int(y1) + padding + 1)
+        x1 = min(w, int(x1) + padding + 1)
+        return y0, y1, x0, x1
+
+    def _estimate_alpha_cf_roi(self, rgb: np.ndarray, trimap: np.ndarray) -> np.ndarray:
+        unknown_mask = (trimap > self.UNKNOWN_TRIMAP_MIN) & (trimap < self.UNKNOWN_TRIMAP_MAX)
+        bbox = self._mask_bbox(unknown_mask, padding=self.ALPHA_ROI_PADDING)
+        if bbox is None or int(np.count_nonzero(unknown_mask)) < self.MIN_ROI_PIXELS_FOR_LOCAL_SOLVE:
+            return self._estimate_alpha_cf(rgb, trimap)
+
+        y0, y1, x0, x1 = bbox
+        alpha_seed = np.where(trimap >= 0.99, 1.0, 0.0).astype(np.float32)
+        alpha_roi = self._estimate_alpha_cf(
+            rgb=rgb[y0:y1, x0:x1, :],
+            trimap=trimap[y0:y1, x0:x1],
+        )
+        alpha_seed[y0:y1, x0:x1] = alpha_roi
+        return alpha_seed
+
+    def _estimate_foreground_ml(self, source_rgb: np.ndarray, alpha: np.ndarray, roi_mask: np.ndarray | None = None) -> np.ndarray | None:
         try:
             from pymatting import estimate_foreground_ml
 
-            rgb_prepared = self._prepare_pymatting_rgb(source_rgb)
-            alpha_prepared = self._prepare_pymatting_alpha(alpha)
-            foreground = estimate_foreground_ml(rgb_prepared, alpha_prepared)
+            if roi_mask is not None:
+                bbox = self._mask_bbox(roi_mask, padding=self.FOREGROUND_ROI_PADDING)
+            else:
+                bbox = None
+
+            if bbox is not None:
+                y0, y1, x0, x1 = bbox
+                rgb_roi = source_rgb[y0:y1, x0:x1, :]
+                alpha_roi = alpha[y0:y1, x0:x1]
+                rgb_prepared = self._prepare_pymatting_rgb(rgb_roi)
+                alpha_prepared = self._prepare_pymatting_alpha(alpha_roi)
+                foreground_roi = estimate_foreground_ml(rgb_prepared, alpha_prepared)
+                foreground = source_rgb.copy()
+                foreground[y0:y1, x0:x1, :] = np.clip(foreground_roi.astype(np.float32), 0.0, 1.0)
+            else:
+                rgb_prepared = self._prepare_pymatting_rgb(source_rgb)
+                alpha_prepared = self._prepare_pymatting_alpha(alpha)
+                foreground = estimate_foreground_ml(rgb_prepared, alpha_prepared)
             logger.info('pymatting foreground estimation active')
             return np.clip(foreground.astype(np.float32), 0.0, 1.0)
         except Exception as exc:
@@ -252,7 +299,8 @@ class MatteRefineService:
         safe_alpha = np.clip(alpha, 0.20, 0.98)
         estimated_fg = (fg_rgb - (1.0 - alpha)[..., None] * source_rgb) / safe_alpha[..., None]
         estimated_fg = np.clip(estimated_fg, 0.0, 1.0)
-        pymatting_fg = self._estimate_foreground_ml(source_rgb=source_rgb, alpha=alpha)
+        roi_mask = edge > 0.01
+        pymatting_fg = self._estimate_foreground_ml(source_rgb=source_rgb, alpha=alpha, roi_mask=roi_mask)
         if pymatting_fg is not None:
             estimated_fg = np.clip(estimated_fg * 0.25 + pymatting_fg * 0.75, 0.0, 1.0)
 
@@ -300,7 +348,7 @@ class MatteRefineService:
         alpha_u8 = np.asarray(fg_rgba.getchannel('A'), dtype=np.uint8)
 
         trimap = self._build_trimap(alpha_u8)
-        alpha_refined = self._estimate_alpha_cf(rgb, trimap)
+        alpha_refined = self._estimate_alpha_cf_roi(rgb, trimap)
         alpha_refined = self._postprocess_alpha(alpha_refined)
         alpha_refined, guided_alpha_debug = self._guided_refine_alpha(source_rgb=rgb, alpha_refined=alpha_refined)
 

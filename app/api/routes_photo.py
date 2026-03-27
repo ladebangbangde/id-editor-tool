@@ -3,7 +3,7 @@ from fastapi import APIRouter, File, Form, UploadFile
 from app.core.exceptions import InvalidArgumentError
 from app.schemas.common import ApiResponse, ErrorBody
 from app.schemas.detect import DetectData
-from app.schemas.generate import GenerateData
+from app.schemas.generate import GenerateData, GenerateSelectionData
 from app.schemas.specs import PhotoSpecsData
 from app.services.photo_processor import get_photo_processor
 from app.services.specs import list_photo_specs, supported_size_keys
@@ -80,4 +80,16 @@ async def process_photo(
             enhance=enhance,
             save_output=saveOutput,
         )
+    return ApiResponse(success=True, message='ok', data=data)
+
+
+@router.post('/confirm-selection', response_model=ApiResponse[GenerateSelectionData])
+async def confirm_selection(
+    taskId: str = Form(...),
+    candidateId: str = Form(...),
+) -> ApiResponse[GenerateSelectionData]:
+    processor = get_photo_processor()
+    if not candidateId:
+        raise InvalidArgumentError('请先选择要保存的图片')
+    data = processor.select_candidate(task_id=taskId, candidate_id=candidateId)
     return ApiResponse(success=True, message='ok', data=data)

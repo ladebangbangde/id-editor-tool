@@ -6,9 +6,11 @@
 
 - `GET /health`：健康检查。
 - `POST /detect`：支持上传图片或传入共享图片路径做 CPU 友好的预检（PASS/WARNING/FAIL）。
-- `POST /generate`：支持上传原图或传入共享路径生成证件照预览图与高清图。
+- `POST /generate`：支持上传原图或传入共享路径并行生成双候选结果（方案A=百度链路，方案B=旧链路），由用户后续选择。
 - `POST /photo/precheck`：独立的照片预检接口，返回结构化指标与风险提示。
 - `POST /photo/process`：`/generate` 的兼容别名，处理前自动执行预检。
+- `POST /generate/select`：确认保存用户选中的候选图（需 `taskId` + `candidateId`）。
+- `POST /photo/confirm-selection`：`/generate/select` 的兼容别名。
 - `GET /photo/specs`：返回 tool 当前支持的 canonical `sizeKey`、像素/毫米尺寸、aliases 与是否支持自定义尺寸。
 - `POST /layout`：基于原图/共享路径/已生成证件照生成 6 寸排版图。
 - `POST /formal-wear`：兼容占位接口（换装功能已下线，固定返回下线提示，不影响主链路）。
@@ -22,14 +24,14 @@
 第一阶段优先保证“**可运行、可测试、可看到效果**”的主链路打通：
 
 - 人脸检测：`MediaPipe Face Detection`（CPU，无需 GPU）。
-- 抠图：`rembg` + `onnxruntime` 本地离线推理。
+- 抠图：默认使用百度 AI 人像分割（`foreground` 透明前景图）；仅在 `BAIDU_SEGMENTATION_ENABLED=false` 时才走 rembg 调试链路。
 - 换底：Pillow 合成白/蓝/红底。
 - 标准裁剪：基于人脸框和尺寸比例的规则裁剪。
 - 增强：轻量亮度/对比度/锐化处理。
 - 排版：6 寸纸张打印参考图。
 - 预检指标：`OpenCV` 计算清晰度、亮度、边缘密度等可解释指标。
 - 质量提示：提供 `primaryIssue/primaryMessage/secondaryWarnings/qualityStatus`，并支持一阶段颈部饰品检测。
-- 普通图与高清图分离：preview 使用更低分辨率 JPEG 压缩，hd 保留完整输出像素。
+- `/generate` 返回双候选正式结果图，tool 不自动替用户选择；可通过 `/generate/select` 或 `/photo/confirm-selection` 确认保存候选。
 
 ## 目录结构
 
@@ -171,7 +173,13 @@ PREVIEW_DIR=preview
 HD_DIR=hd
 PRINT_DIR=print
 TEMP_DIR=temp
-SAVE_INTERMEDIATE=true
+SAVE_INTERMEDIATE=false
+BAIDU_SEGMENTATION_ENABLED=true
+BAIDU_API_KEY=
+BAIDU_SECRET_KEY=
+BAIDU_OAUTH_URL=https://aip.baidubce.com/oauth/2.0/token
+BAIDU_SEGMENTATION_URL=https://aip.baidubce.com/rest/2.0/image-classify/v1/body_seg
+BAIDU_HTTP_TIMEOUT_SEC=15
 MAX_UPLOAD_SIZE_MB=15
 DEFAULT_BACKGROUND_COLOR=blue
 DEFAULT_SIZE_KEY=one_inch
@@ -187,7 +195,9 @@ HD_QUALITY=95
 - `APP_PORT`：服务端口
 - `UPLOAD_ROOT`：容器内共享上传根目录，默认 `/app/uploads`
 - `STATIC_MOUNT_PATH`：静态访问前缀，默认 `/uploads`
-- `SAVE_INTERMEDIATE`：是否保存抠图等中间结果
+- `SAVE_INTERMEDIATE`：是否保存抠图等中间结果（包含 `baidu_foreground.png` / `baidu_labelmap.png` / `baidu_scoremap.png`），生产环境建议保持 `SAVE_INTERMEDIATE=false`
+- `BAIDU_SEGMENTATION_ENABLED`：是否启用百度人像分割正式链路（默认 true）
+- `BAIDU_API_KEY` / `BAIDU_SECRET_KEY`：百度鉴权凭据；缺失时会直接报错，不会静默回退
 - `MAX_UPLOAD_SIZE_MB`：最大上传大小
 - `DEFAULT_BACKGROUND_COLOR`：默认底色
 - `DEFAULT_SIZE_KEY`：默认证件照规格
@@ -514,7 +524,7 @@ python scripts/test_layout.py --image inputs/test.jpg --size-key one_inch --back
 如果需要保留更多处理痕迹，请在 `.env` 中设置：
 
 ```env
-SAVE_INTERMEDIATE=true
+SAVE_INTERMEDIATE=false
 ```
 
 ## 错误码
