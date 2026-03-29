@@ -27,6 +27,7 @@ from app.schemas.common import FileInfo, SizeInfo
 from app.schemas.detect import DetectData
 from app.schemas.generate import GenerateCandidate, GenerateData, GenerateSelectionData
 from app.schemas.layout import LayoutData
+from app.schemas.task_status import StageCode
 from app.services.background import BackgroundService
 from app.services.engines.legacy_engine import LegacyPhotoGenerationEngine
 from app.services.cropper import CropperService
@@ -38,6 +39,7 @@ from app.services.output_quality_service import OutputQualityService
 from app.services.segmentation import SegmentationService
 from app.services.photo_generation_engine import EngineInput
 from app.services.specs import PhotoSpec, get_photo_spec
+from app.services.task_status_service import TaskStatusService
 from app.services.storage import StorageService
 from app.utils.file_naming import build_task_id
 from app.utils.image_io import load_image_from_bytes, load_image_from_path, resolve_input_path, save_image
@@ -61,6 +63,7 @@ class PhotoProcessor:
         self.matte_refiner = MatteRefineService()
         self.output_quality = OutputQualityService()
         self.layout_service = LayoutService()
+        self.task_status = TaskStatusService()
         self.baidu_engine = LegacyPhotoGenerationEngine(
             segmenter=self.segmenter,
             matte_refiner=self.matte_refiner,
@@ -360,6 +363,28 @@ class PhotoProcessor:
         )
         return candidate, candidate_intermediate, selected_quality.metrics, selected_quality.warnings
 
+    def update_task_stage(
+        self,
+        *,
+        task_id: str,
+        stage_code: StageCode,
+        progress: int,
+        message: str | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        self.task_status.update(
+            task_id=task_id,
+            stage_code=stage_code,
+            progress=progress,
+            message=message,
+            error_code=error_code,
+            error_message=error_message,
+        )
+
+    def get_task_status(self, task_id: str):
+        return self.task_status.get(task_id)
+
     def detect(self, image: Image.Image) -> DetectData:
         return self._build_detect_data(self.detector.detect(image))
 
@@ -426,18 +451,21 @@ class PhotoProcessor:
         background_color: str,
         enhance: bool,
         save_output: bool,
+        task_id: str | None = None,
     ) -> GenerateData:
-        logger.info('Start generate pipeline size=%s background=%s enhance=%s', size_key, background_color, enhance)
+        task_id = task_id or build_task_id('gen')
+        logger.info('Start generate pipeline size=%s background=%s enhance=%s task_id=%s', size_key, background_color, enhance, task_id)
+        self.update_task_stage(task_id=task_id, stage_code=StageCode.CHECKING, progress=15, message='photo is being checked')
         spec = get_photo_spec(size_key)
         detect_result = self.detector.detect(image)
         if not detect_result.can_generate:
             logger.info('Generate blocked by detect gatekeeper status=%s reasons=%s', detect_result.status, detect_result.reason_codes)
             self._raise_detect_failure(detect_result)
 
-        task_id = build_task_id('gen')
         self.storage.category_task_dir('temp', task_id)
         logger.info('Task directories prepared task_id=%s upload_root=%s', task_id, self.storage.upload_root)
 
+        self.update_task_stage(task_id=task_id, stage_code=StageCode.ADJUSTING, progress=45, message='background and layout are being adjusted')
         payload = EngineInput(
             source_image=image,
             spec=spec,
@@ -480,6 +508,7 @@ class PhotoProcessor:
                 candidate_warning_codes[candidate_id] = quality_warning_codes
 
         candidates.sort(key=lambda item: item.candidateId)
+        self.update_task_stage(task_id=task_id, stage_code=StageCode.ENHANCING, progress=75, message='result is being enhanced')
         self._save_candidate_manifest(task_id=task_id, candidates=candidates)
         logger.info('Parallel candidate generation done task=%s candidates=%s', task_id, [item.candidateId for item in candidates])
 
@@ -509,7 +538,8 @@ class PhotoProcessor:
             if warning and not self._looks_like_internal_message(warning)
         ]
 
-        return GenerateData(
+        self.update_task_stage(task_id=task_id, stage_code=StageCode.FINALIZING, progress=90, message='output is being finalized')
+        data = GenerateData(
             taskId=task_id,
             previewPath=compatibility_candidate.previewPath,
             previewUrl=compatibility_candidate.previewUrl,
@@ -557,6 +587,8 @@ class PhotoProcessor:
             safeToSubmit=False,
             outputQualityMetrics={},
         )
+        self.update_task_stage(task_id=task_id, stage_code=StageCode.SUCCESS, progress=100, message='task completed successfully')
+        return data
 
     def layout_from_photo(self, photo: Image.Image, spec: PhotoSpec, paper: str) -> tuple[Image.Image, int]:
         return self.layout_service.build(photo, spec, paper)
@@ -571,6 +603,7 @@ class PhotoProcessor:
         background_color: str | None,
         enhance: bool,
         save_output: bool,
+        task_id: str | None = None,
     ) -> GenerateData:
         _, image = await self.read_upload(file)
         return self.generate(
@@ -579,6 +612,7 @@ class PhotoProcessor:
             background_color=background_color or self.settings.default_background_color,
             enhance=enhance,
             save_output=save_output,
+            task_id=task_id,
         )
 
     def generate_from_path(
@@ -588,6 +622,7 @@ class PhotoProcessor:
         background_color: str | None,
         enhance: bool,
         save_output: bool,
+        task_id: str | None = None,
     ) -> GenerateData:
         _, image = self.read_image_path(image_path)
         return self.generate(
@@ -596,6 +631,7 @@ class PhotoProcessor:
             background_color=background_color or self.settings.default_background_color,
             enhance=enhance,
             save_output=save_output,
+            task_id=task_id,
         )
 
     def select_candidate(self, task_id: str, candidate_id: str) -> GenerateSelectionData:
