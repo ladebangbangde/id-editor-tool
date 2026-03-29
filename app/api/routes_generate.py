@@ -3,7 +3,9 @@ from fastapi import APIRouter, File, Form, UploadFile
 from app.core.exceptions import InvalidArgumentError
 from app.schemas.common import ApiResponse
 from app.schemas.generate import GenerateData, GenerateSelectionData
+from app.schemas.task_status import TaskStatusData
 from app.services.photo_processor import get_photo_processor
+from app.services.task_status_store import get_task_status_store
 
 router = APIRouter(tags=['generate'])
 
@@ -17,6 +19,7 @@ async def generate(
     backgroundColor: str | None = Form(None),
     enhance: bool = Form(False),
     saveOutput: bool = Form(True),
+    taskId: str | None = Form(None),
 ) -> ApiResponse[GenerateData]:
     processor = get_photo_processor()
     if file is None and not imagePath:
@@ -28,6 +31,7 @@ async def generate(
             background_color=backgroundColor,
             enhance=enhance,
             save_output=saveOutput,
+            task_id=taskId,
         )
     else:
         data = processor.generate_from_path(
@@ -36,7 +40,22 @@ async def generate(
             background_color=backgroundColor,
             enhance=enhance,
             save_output=saveOutput,
+            task_id=taskId,
         )
+    return ApiResponse(success=True, message='ok', data=data)
+
+
+@router.post('/tasks/create', response_model=ApiResponse[TaskStatusData])
+async def create_task(taskId: str | None = Form(None)) -> ApiResponse[TaskStatusData]:
+    store = get_task_status_store()
+    data = store.create_task(task_id=taskId)
+    return ApiResponse(success=True, message='ok', data=data)
+
+
+@router.get('/tasks/{task_id}/status', response_model=ApiResponse[TaskStatusData])
+async def get_task_status(task_id: str) -> ApiResponse[TaskStatusData]:
+    store = get_task_status_store()
+    data = store.get_status(task_id)
     return ApiResponse(success=True, message='ok', data=data)
 
 

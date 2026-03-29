@@ -39,6 +39,16 @@ from app.services.segmentation import SegmentationService
 from app.services.photo_generation_engine import EngineInput
 from app.services.specs import PhotoSpec, get_photo_spec
 from app.services.storage import StorageService
+from app.services.task_status_store import (
+    STAGE_ADJUSTING,
+    STAGE_CHECKING,
+    STAGE_FAILED,
+    STAGE_FINALIZING,
+    STAGE_GENERATING,
+    STAGE_SUCCESS,
+    TaskStatusStore,
+    get_task_status_store,
+)
 from app.utils.file_naming import build_task_id
 from app.utils.image_io import load_image_from_bytes, load_image_from_path, resolve_input_path, save_image
 from app.utils.validators import validate_content_size, validate_upload
@@ -61,6 +71,7 @@ class PhotoProcessor:
         self.matte_refiner = MatteRefineService()
         self.output_quality = OutputQualityService()
         self.layout_service = LayoutService()
+        self.task_status_store: TaskStatusStore = get_task_status_store()
         self.baidu_engine = LegacyPhotoGenerationEngine(
             segmenter=self.segmenter,
             matte_refiner=self.matte_refiner,
@@ -426,137 +437,175 @@ class PhotoProcessor:
         background_color: str,
         enhance: bool,
         save_output: bool,
+        task_id: str | None = None,
     ) -> GenerateData:
         logger.info('Start generate pipeline size=%s background=%s enhance=%s', size_key, background_color, enhance)
-        spec = get_photo_spec(size_key)
-        detect_result = self.detector.detect(image)
-        if not detect_result.can_generate:
-            logger.info('Generate blocked by detect gatekeeper status=%s reasons=%s', detect_result.status, detect_result.reason_codes)
-            self._raise_detect_failure(detect_result)
+        active_task_id = (task_id or '').strip() or build_task_id('gen')
+        self.task_status_store.create_task(task_id=active_task_id, message='任务已创建，等待检测')
+        try:
+            self.task_status_store.update_stage(
+                active_task_id,
+                STAGE_CHECKING,
+                '正在进行图片读取与人像检测',
+            )
+            spec = get_photo_spec(size_key)
+            detect_result = self.detector.detect(image)
+            if not detect_result.can_generate:
+                logger.info('Generate blocked by detect gatekeeper status=%s reasons=%s', detect_result.status, detect_result.reason_codes)
+                self._raise_detect_failure(detect_result)
 
-        task_id = build_task_id('gen')
-        self.storage.category_task_dir('temp', task_id)
-        logger.info('Task directories prepared task_id=%s upload_root=%s', task_id, self.storage.upload_root)
+            self.task_status_store.update_stage(
+                active_task_id,
+                STAGE_ADJUSTING,
+                '正在进行抠图、换底与裁切准备',
+            )
+            self.storage.category_task_dir('temp', active_task_id)
+            logger.info('Task directories prepared task_id=%s upload_root=%s', active_task_id, self.storage.upload_root)
 
-        payload = EngineInput(
-            source_image=image,
-            spec=spec,
-            background_color=background_color,
-            enhance=enhance,
-            face_box=detect_result.primary_face,
-        )
-        logger.info('Parallel candidate generation start engines=[baidu, legacy]')
-        candidate_specs = [
-            ('baidu', 'baidu', '方案A', self.baidu_engine),
-            ('legacy', 'legacy', '方案B', self.legacy_engine),
-        ]
-        candidates: list[GenerateCandidate] = []
-        candidate_intermediate_files: dict[str, FileInfo] = {}
-        candidate_metrics: dict[str, float] = {}
-        candidate_warning_codes: dict[str, list[str]] = {}
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix='candidate-gen') as executor:
-            future_to_candidate = {
-                executor.submit(
-                    self._run_candidate_pipeline,
-                    task_id=task_id,
-                    candidate_id=candidate_id,
-                    engine_key=engine_key,
-                    label=label,
-                    engine=engine,
-                    payload=payload,
-                    source_image=image,
-                    detect_result=detect_result,
-                    save_output=save_output,
-                ): candidate_id
-                for candidate_id, engine_key, label, engine in candidate_specs
-            }
-            for future in as_completed(future_to_candidate):
-                candidate_id = future_to_candidate[future]
-                candidate, intermediate, metrics, quality_warning_codes = future.result()
-                candidates.append(candidate)
-                if intermediate:
-                    candidate_intermediate_files.update(intermediate)
-                candidate_metrics[candidate_id] = float(metrics.get('edge_noise_score', 0.0))
-                candidate_warning_codes[candidate_id] = quality_warning_codes
+            payload = EngineInput(
+                source_image=image,
+                spec=spec,
+                background_color=background_color,
+                enhance=enhance,
+                face_box=detect_result.primary_face,
+            )
+            self.task_status_store.update_stage(
+                active_task_id,
+                STAGE_GENERATING,
+                '正在并行生成候选证件照',
+            )
+            logger.info('Parallel candidate generation start engines=[baidu, legacy]')
+            candidate_specs = [
+                ('baidu', 'baidu', '方案A', self.baidu_engine),
+                ('legacy', 'legacy', '方案B', self.legacy_engine),
+            ]
+            candidates: list[GenerateCandidate] = []
+            candidate_intermediate_files: dict[str, FileInfo] = {}
+            candidate_metrics: dict[str, float] = {}
+            candidate_warning_codes: dict[str, list[str]] = {}
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='candidate-gen') as executor:
+                future_to_candidate = {
+                    executor.submit(
+                        self._run_candidate_pipeline,
+                        task_id=active_task_id,
+                        candidate_id=candidate_id,
+                        engine_key=engine_key,
+                        label=label,
+                        engine=engine,
+                        payload=payload,
+                        source_image=image,
+                        detect_result=detect_result,
+                        save_output=save_output,
+                    ): candidate_id
+                    for candidate_id, engine_key, label, engine in candidate_specs
+                }
+                for future in as_completed(future_to_candidate):
+                    candidate_id = future_to_candidate[future]
+                    candidate, intermediate, metrics, quality_warning_codes = future.result()
+                    candidates.append(candidate)
+                    if intermediate:
+                        candidate_intermediate_files.update(intermediate)
+                    candidate_metrics[candidate_id] = float(metrics.get('edge_noise_score', 0.0))
+                    candidate_warning_codes[candidate_id] = quality_warning_codes
 
-        candidates.sort(key=lambda item: item.candidateId)
-        self._save_candidate_manifest(task_id=task_id, candidates=candidates)
-        logger.info('Parallel candidate generation done task=%s candidates=%s', task_id, [item.candidateId for item in candidates])
+            self.task_status_store.update_stage(
+                active_task_id,
+                STAGE_FINALIZING,
+                '正在保存输出并整理返回数据',
+            )
+            candidates.sort(key=lambda item: item.candidateId)
+            self._save_candidate_manifest(task_id=active_task_id, candidates=candidates)
+            logger.info('Parallel candidate generation done task=%s candidates=%s', active_task_id, [item.candidateId for item in candidates])
 
-        # 前端主展示区只能使用用户可读中文提示，内部工程信息必须留在 debugInfo / 日志。
-        warnings: list[str] = []
-        for candidate in candidates:
-            for warning in candidate.warnings:
-                if warning not in warnings:
-                    warnings.append(warning)
-        detect_summary = self._build_detect_data(detect_result)
-        compliance_status = self._to_compliance_status(detect_result.status)
-        compliance_message = self._compliance_message(compliance_status)
-        compliance_details = detect_summary.complianceDetails
-        overall_status_rank = {'PASS': 0, 'WARNING': 1, 'FAIL': 2}
-        global_quality_status = max((candidate.qualityStatus for candidate in candidates), key=lambda status: overall_status_rank.get(status, 1))
-        if global_quality_status == 'FAIL':
-            final_quality_message = '已生成候选图，但存在明显质量风险，请谨慎选择'
-        elif global_quality_status == 'WARNING':
-            final_quality_message = '已生成候选图，建议放大检查边缘细节后再选择'
-        else:
-            final_quality_message = '已生成候选图，请选择你更满意的一张保存'
+            # 前端主展示区只能使用用户可读中文提示，内部工程信息必须留在 debugInfo / 日志。
+            warnings: list[str] = []
+            for candidate in candidates:
+                for warning in candidate.warnings:
+                    if warning not in warnings:
+                        warnings.append(warning)
+            detect_summary = self._build_detect_data(detect_result)
+            compliance_status = self._to_compliance_status(detect_result.status)
+            compliance_message = self._compliance_message(compliance_status)
+            compliance_details = detect_summary.complianceDetails
+            overall_status_rank = {'PASS': 0, 'WARNING': 1, 'FAIL': 2}
+            global_quality_status = max((candidate.qualityStatus for candidate in candidates), key=lambda status: overall_status_rank.get(status, 1))
+            if global_quality_status == 'FAIL':
+                final_quality_message = '已生成候选图，但存在明显质量风险，请谨慎选择'
+            elif global_quality_status == 'WARNING':
+                final_quality_message = '已生成候选图，建议放大检查边缘细节后再选择'
+            else:
+                final_quality_message = '已生成候选图，请选择你更满意的一张保存'
 
-        compatibility_candidate = next((item for item in candidates if item.candidateId == 'baidu'), candidates[0])
-        secondary_warnings = [
-            warning
-            for warning in detect_result.secondary_warnings
-            if warning and not self._looks_like_internal_message(warning)
-        ]
+            compatibility_candidate = next((item for item in candidates if item.candidateId == 'baidu'), candidates[0])
+            secondary_warnings = [
+                warning
+                for warning in detect_result.secondary_warnings
+                if warning and not self._looks_like_internal_message(warning)
+            ]
 
-        return GenerateData(
-            taskId=task_id,
-            previewPath=compatibility_candidate.previewPath,
-            previewUrl=compatibility_candidate.previewUrl,
-            hdPath=compatibility_candidate.imagePath,
-            hdUrl=compatibility_candidate.imageUrl,
-            backgroundColor=background_color,
-            size=self._size_info(spec),
-            width=spec.width_px,
-            height=spec.height_px,
-            warnings=warnings,
-            detect=detect_summary,
-            detectSummary=detect_summary,
-            candidates=candidates,
-            selectedCandidateId=None,
-            requireUserSelection=True,
-            primaryIssue=compatibility_candidate.primaryIssue or detect_result.primary_issue,
-            primaryMessage=compatibility_candidate.primaryMessage or detect_result.primary_message or (warnings[0] if warnings else None),
-            secondaryWarnings=secondary_warnings,
-            qualityStatus=global_quality_status,
-            qualityMessage=final_quality_message,
-            outputQualityStatus=compatibility_candidate.outputQualityStatus,
-            outputQualityMessage=compatibility_candidate.outputQualityMessage,
-            outputReasonCodes=compatibility_candidate.outputReasonCodes,
-            allowPreviewSave=False,
-            allowHdSave=False,
-            previewWidth=0,
-            previewHeight=0,
-            previewFormat='JPEG',
-            previewQuality=0,
-            hdWidth=compatibility_candidate.width,
-            hdHeight=compatibility_candidate.height,
-            hdFormat='PNG',
-            hdQuality=100,
-            intermediateFiles=candidate_intermediate_files or None,
-            debugInfo={
-                'parallelCandidates': [item.candidateId for item in candidates],
-                'candidateMetrics': candidate_metrics,
-                'candidateWarningCodes': candidate_warning_codes,
-            },
-            processStatus='generated',
-            processMessage='已生成两套候选结果，请先选择要保存的图片',
-            complianceStatus=compliance_status,
-            complianceMessage=compliance_message,
-            complianceDetails=compliance_details,
-            safeToSubmit=False,
-            outputQualityMetrics={},
-        )
+            data = GenerateData(
+                taskId=active_task_id,
+                previewPath=compatibility_candidate.previewPath,
+                previewUrl=compatibility_candidate.previewUrl,
+                hdPath=compatibility_candidate.imagePath,
+                hdUrl=compatibility_candidate.imageUrl,
+                backgroundColor=background_color,
+                size=self._size_info(spec),
+                width=spec.width_px,
+                height=spec.height_px,
+                warnings=warnings,
+                detect=detect_summary,
+                detectSummary=detect_summary,
+                candidates=candidates,
+                selectedCandidateId=None,
+                requireUserSelection=True,
+                primaryIssue=compatibility_candidate.primaryIssue or detect_result.primary_issue,
+                primaryMessage=compatibility_candidate.primaryMessage or detect_result.primary_message or (warnings[0] if warnings else None),
+                secondaryWarnings=secondary_warnings,
+                qualityStatus=global_quality_status,
+                qualityMessage=final_quality_message,
+                outputQualityStatus=compatibility_candidate.outputQualityStatus,
+                outputQualityMessage=compatibility_candidate.outputQualityMessage,
+                outputReasonCodes=compatibility_candidate.outputReasonCodes,
+                allowPreviewSave=False,
+                allowHdSave=False,
+                previewWidth=0,
+                previewHeight=0,
+                previewFormat='JPEG',
+                previewQuality=0,
+                hdWidth=compatibility_candidate.width,
+                hdHeight=compatibility_candidate.height,
+                hdFormat='PNG',
+                hdQuality=100,
+                intermediateFiles=candidate_intermediate_files or None,
+                debugInfo={
+                    'parallelCandidates': [item.candidateId for item in candidates],
+                    'candidateMetrics': candidate_metrics,
+                    'candidateWarningCodes': candidate_warning_codes,
+                },
+                processStatus='generated',
+                processMessage='已生成两套候选结果，请先选择要保存的图片',
+                complianceStatus=compliance_status,
+                complianceMessage=compliance_message,
+                complianceDetails=compliance_details,
+                safeToSubmit=False,
+                outputQualityMetrics={},
+            )
+            self.task_status_store.update_stage(
+                active_task_id,
+                STAGE_SUCCESS,
+                '任务处理完成',
+            )
+            return data
+        except Exception as exc:
+            self.task_status_store.update_stage(
+                active_task_id,
+                STAGE_FAILED,
+                '任务处理失败',
+                error_code=exc.__class__.__name__,
+                error_message=str(exc),
+            )
+            raise
 
     def layout_from_photo(self, photo: Image.Image, spec: PhotoSpec, paper: str) -> tuple[Image.Image, int]:
         return self.layout_service.build(photo, spec, paper)
@@ -571,6 +620,7 @@ class PhotoProcessor:
         background_color: str | None,
         enhance: bool,
         save_output: bool,
+        task_id: str | None = None,
     ) -> GenerateData:
         _, image = await self.read_upload(file)
         return self.generate(
@@ -579,6 +629,7 @@ class PhotoProcessor:
             background_color=background_color or self.settings.default_background_color,
             enhance=enhance,
             save_output=save_output,
+            task_id=task_id,
         )
 
     def generate_from_path(
@@ -588,6 +639,7 @@ class PhotoProcessor:
         background_color: str | None,
         enhance: bool,
         save_output: bool,
+        task_id: str | None = None,
     ) -> GenerateData:
         _, image = self.read_image_path(image_path)
         return self.generate(
@@ -596,6 +648,7 @@ class PhotoProcessor:
             background_color=background_color or self.settings.default_background_color,
             enhance=enhance,
             save_output=save_output,
+            task_id=task_id,
         )
 
     def select_candidate(self, task_id: str, candidate_id: str) -> GenerateSelectionData:
