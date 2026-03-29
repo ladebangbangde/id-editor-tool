@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from PIL import Image
 
 from app.services.photo_generation_engine import EngineInput, EngineResult, PhotoGenerationEngine
@@ -17,13 +19,21 @@ class LegacyPhotoGenerationEngine(PhotoGenerationEngine):
         self.preview_builder = preview_builder
         self.settings = settings
 
-    def generate(self, payload: EngineInput) -> EngineResult:
+    def generate(
+        self,
+        payload: EngineInput,
+        stage_reporter: Callable[[str], None] | None = None,
+    ) -> EngineResult:
+        if stage_reporter is not None:
+            stage_reporter('adjusting')
         rgba_foreground = self.segmenter.remove_background(payload.source_image)
         refined = self.matte_refiner.refine(payload.source_image, rgba_foreground)
         effective_rgba = refined.rgba
         if self.settings.enable_decontaminated_output_as_default and refined.decontaminated_rgba is not None:
             effective_rgba = refined.decontaminated_rgba
         cropped_rgba = self.cropper.crop(effective_rgba, payload.spec, payload.face_box)
+        if stage_reporter is not None:
+            stage_reporter('generating')
         hd_image = self.background.apply(cropped_rgba, payload.background_color)
         if payload.enhance:
             hd_image = self.enhancer.enhance(hd_image)

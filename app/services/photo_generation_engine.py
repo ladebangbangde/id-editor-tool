@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Callable, Protocol
 
 from PIL import Image
 
@@ -31,5 +31,9 @@ class EngineResult:
 class PhotoGenerationEngine(Protocol):
     name: str
 
-    def generate(self, payload: EngineInput) -> EngineResult:
+    def generate(
+        self,
+        payload: EngineInput,
+        stage_reporter: Callable[[str], None] | None = None,
+    ) -> EngineResult:
         ...

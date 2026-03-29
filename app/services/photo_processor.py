@@ -295,7 +295,18 @@ class PhotoProcessor:
         save_output: bool,
     ) -> tuple[GenerateCandidate, dict[str, FileInfo] | None, dict[str, float], list[str]]:
         started = time.perf_counter()
-        selected_result = engine.generate(payload)
+        stage_messages = {
+            'adjusting': '正在进行抠图、换底与裁切准备',
+            'generating': '正在并行生成候选证件照',
+        }
+
+        def stage_reporter(stage_name: str) -> None:
+            if stage_name == 'adjusting':
+                self.task_status_store.update_stage(task_id, STAGE_ADJUSTING, stage_messages[stage_name])
+            elif stage_name == 'generating':
+                self.task_status_store.update_stage(task_id, STAGE_GENERATING, stage_messages[stage_name])
+
+        selected_result = engine.generate(payload, stage_reporter=stage_reporter)
         selected_quality = self.output_quality.evaluate(
             source_image=source_image,
             output_image=selected_result.hd_image,
@@ -468,11 +479,6 @@ class PhotoProcessor:
                 background_color=background_color,
                 enhance=enhance,
                 face_box=detect_result.primary_face,
-            )
-            self.task_status_store.update_stage(
-                active_task_id,
-                STAGE_GENERATING,
-                '正在并行生成候选证件照',
             )
             logger.info('Parallel candidate generation start engines=[baidu, legacy]')
             candidate_specs = [

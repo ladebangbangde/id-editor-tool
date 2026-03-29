@@ -21,6 +21,16 @@ STAGE_FINALIZING = StageDefinition(code='finalizing', progress=92)
 STAGE_SUCCESS = StageDefinition(code='success', progress=100)
 STAGE_FAILED = StageDefinition(code='failed', progress=100)
 
+_STAGE_RANK = {
+    'created': 0,
+    STAGE_CHECKING.code: 1,
+    STAGE_ADJUSTING.code: 2,
+    STAGE_GENERATING.code: 3,
+    STAGE_FINALIZING.code: 4,
+    STAGE_SUCCESS.code: 5,
+    STAGE_FAILED.code: 6,
+}
+
 
 class TaskStatusStore:
     def __init__(self) -> None:
@@ -78,6 +88,10 @@ class TaskStatusStore:
                     errorCode=None,
                     errorMessage=None,
                 )
+            current_rank = _STAGE_RANK.get(current.stageCode, -1)
+            next_rank = _STAGE_RANK.get(stage.code, -1)
+            if stage.code != STAGE_FAILED.code and next_rank < current_rank:
+                return current
             updated = TaskStatusData(
                 taskId=task_id,
                 stageCode=stage.code,
