@@ -281,6 +281,47 @@ class PhotoProcessor:
             return 'PASS', '输入与输出质量均通过，可用于正式证件照提交', True
         return 'WARNING', '图片已生成，但仍存在质量风险，不建议直接用于正式证件照提交', False
 
+    @staticmethod
+    def _status_rank(status: str) -> int:
+        return {'PASS': 0, 'WARNING': 1, 'FAIL': 2}.get(status, 1)
+
+    def _candidate_composite_score(self, candidate: GenerateCandidate, metrics: dict[str, float]) -> float:
+        quality_rank = self._status_rank(candidate.qualityStatus)
+        output_rank = self._status_rank(candidate.outputQualityStatus)
+        safe_penalty = 0.0 if candidate.safeToSubmit else 1.2
+        face_leak = float(
+            metrics.get('face_background_leak_ratio', 0.0)
+            + metrics.get('forehead_intrusion_score', 0.0)
+            + metrics.get('facial_red_blue_intrusion', 0.0)
+        )
+        edge_noise = float(metrics.get('edge_noise_score', 0.0))
+        # 越小越好，FAIL 会被拉高到明显劣后。
+        return quality_rank * 3.0 + output_rank * 4.0 + safe_penalty + face_leak * 8.0 + edge_noise * 2.2
+
+    def _select_best_candidate(
+        self,
+        candidates: list[GenerateCandidate],
+        candidate_metrics: dict[str, dict[str, float]],
+    ) -> tuple[GenerateCandidate, dict[str, float]]:
+        scored: list[tuple[float, GenerateCandidate, dict[str, float]]] = []
+        for candidate in candidates:
+            metrics = candidate_metrics.get(candidate.candidateId, {})
+            score = self._candidate_composite_score(candidate, metrics)
+            scored.append((score, candidate, metrics))
+        scored.sort(key=lambda item: item[0])
+        best_score, best_candidate, best_metrics = scored[0]
+        return best_candidate, {
+            'candidateCompositeScore': round(best_score, 4),
+            'candidateFaceLeakScore': round(
+                float(
+                    best_metrics.get('face_background_leak_ratio', 0.0)
+                    + best_metrics.get('forehead_intrusion_score', 0.0)
+                    + best_metrics.get('facial_red_blue_intrusion', 0.0)
+                ),
+                6,
+            ),
+        }
+
     def _run_candidate_pipeline(
         self,
         *,
@@ -487,7 +528,7 @@ class PhotoProcessor:
             ]
             candidates: list[GenerateCandidate] = []
             candidate_intermediate_files: dict[str, FileInfo] = {}
-            candidate_metrics: dict[str, float] = {}
+            candidate_metrics: dict[str, dict[str, float]] = {}
             candidate_warning_codes: dict[str, list[str]] = {}
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix='candidate-gen') as executor:
                 future_to_candidate = {
@@ -511,7 +552,7 @@ class PhotoProcessor:
                     candidates.append(candidate)
                     if intermediate:
                         candidate_intermediate_files.update(intermediate)
-                    candidate_metrics[candidate_id] = float(metrics.get('edge_noise_score', 0.0))
+                    candidate_metrics[candidate_id] = metrics
                     candidate_warning_codes[candidate_id] = quality_warning_codes
 
             self.task_status_store.update_stage(
@@ -542,7 +583,11 @@ class PhotoProcessor:
             else:
                 final_quality_message = '已生成候选图，请选择你更满意的一张保存'
 
-            compatibility_candidate = next((item for item in candidates if item.candidateId == 'baidu'), candidates[0])
+            if self.settings.enable_auto_select_best_candidate:
+                compatibility_candidate, selection_metrics = self._select_best_candidate(candidates, candidate_metrics)
+            else:
+                compatibility_candidate = next((item for item in candidates if item.candidateId == 'baidu'), candidates[0])
+                selection_metrics = {'candidateCompositeScore': 0.0, 'candidateFaceLeakScore': 0.0}
             secondary_warnings = [
                 warning
                 for warning in detect_result.secondary_warnings
@@ -588,6 +633,8 @@ class PhotoProcessor:
                     'parallelCandidates': [item.candidateId for item in candidates],
                     'candidateMetrics': candidate_metrics,
                     'candidateWarningCodes': candidate_warning_codes,
+                    'selectedCompatibilityCandidate': compatibility_candidate.candidateId,
+                    **selection_metrics,
                 },
                 processStatus='generated',
                 processMessage='已生成两套候选结果，请先选择要保存的图片',
@@ -595,7 +642,7 @@ class PhotoProcessor:
                 complianceMessage=compliance_message,
                 complianceDetails=compliance_details,
                 safeToSubmit=False,
-                outputQualityMetrics={},
+                outputQualityMetrics=candidate_metrics.get(compatibility_candidate.candidateId, {}),
             )
             self.task_status_store.update_stage(
                 active_task_id,

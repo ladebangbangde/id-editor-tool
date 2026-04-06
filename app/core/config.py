@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     enable_cloth_pollution_check: bool = Field(default=True, alias='ENABLE_CLOTH_POLLUTION_CHECK')
     enable_decontaminated_output_as_default: bool = Field(default=True, alias='ENABLE_DECONTAMINATED_OUTPUT_AS_DEFAULT')
     enable_guided_edge_refinement: bool = Field(default=True, alias='ENABLE_GUIDED_EDGE_REFINEMENT')
+    enable_baidu_mask_rebuild: bool = Field(default=True, alias='ENABLE_BAIDU_MASK_REBUILD')
+    enable_face_alpha_protection: bool = Field(default=True, alias='ENABLE_FACE_ALPHA_PROTECTION')
+    enable_safe_edge_background_compose: bool = Field(default=True, alias='ENABLE_SAFE_EDGE_BACKGROUND_COMPOSE')
+    enable_auto_select_best_candidate: bool = Field(default=True, alias='ENABLE_AUTO_SELECT_BEST_CANDIDATE')
+    enable_face_background_leak_check: bool = Field(default=True, alias='ENABLE_FACE_BACKGROUND_LEAK_CHECK')
 
     baidu_segmentation_enabled: bool = Field(default=True, alias='BAIDU_SEGMENTATION_ENABLED')
     baidu_api_key: str = Field(default='', alias='BAIDU_API_KEY')

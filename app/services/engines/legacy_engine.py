@@ -27,7 +27,16 @@ class LegacyPhotoGenerationEngine(PhotoGenerationEngine):
         if stage_reporter is not None:
             stage_reporter('adjusting')
         rgba_foreground = self.segmenter.remove_background(payload.source_image)
-        refined = self.matte_refiner.refine(payload.source_image, rgba_foreground)
+        segmentation_debug = self.segmenter.consume_debug_images() if hasattr(self.segmenter, 'consume_debug_images') else {}
+        alpha_seed = segmentation_debug.get('baidu_alpha_seed.png', rgba_foreground.getchannel('A'))
+        trimap_seed = segmentation_debug.get('baidu_trimap_seed.png')
+        refined = self.matte_refiner.refine_from_alpha_seed(
+            source_image=payload.source_image,
+            alpha_seed=alpha_seed,
+            foreground_hint=rgba_foreground,
+            face_box=payload.face_box,
+            trimap_seed=trimap_seed,
+        )
         effective_rgba = refined.rgba
         if self.settings.enable_decontaminated_output_as_default and refined.decontaminated_rgba is not None:
             effective_rgba = refined.decontaminated_rgba
@@ -40,7 +49,6 @@ class LegacyPhotoGenerationEngine(PhotoGenerationEngine):
 
         preview_image, preview_quality = self.preview_builder(hd_image)
 
-        segmentation_debug = self.segmenter.consume_debug_images() if hasattr(self.segmenter, 'consume_debug_images') else {}
         debug_images: dict[str, Image.Image] = {
             'foreground.png': rgba_foreground,
             'refined_alpha.png': refined.alpha,
@@ -66,6 +74,10 @@ class LegacyPhotoGenerationEngine(PhotoGenerationEngine):
             debug_images['border_residue_mask.png'] = refined.border_residue_mask
         if refined.edge_band_mask is not None:
             debug_images['edge_band_mask.png'] = refined.edge_band_mask
+        if refined.face_protected_alpha is not None:
+            debug_images['face_protected_alpha.png'] = refined.face_protected_alpha
+        if refined.final_refined_alpha is not None:
+            debug_images['final_refined_alpha.png'] = refined.final_refined_alpha
 
         return EngineResult(
             engine_name=self.name,

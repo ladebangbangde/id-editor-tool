@@ -66,7 +66,20 @@ class SegmentationService:
                 self._last_debug_images['baidu_labelmap.png'] = result.labelmap
             if result.scoremap is not None:
                 self._last_debug_images['baidu_scoremap.png'] = result.scoremap
+            if result.alpha_seed is not None:
+                self._last_debug_images['baidu_alpha_seed.png'] = result.alpha_seed
+            if result.trimap_seed is not None:
+                self._last_debug_images['baidu_trimap_seed.png'] = result.trimap_seed
             logger.info('Segmentation backend=baidu success mode=%s', self.backend_mode)
+            if self.settings.enable_baidu_mask_rebuild:
+                rebuilt = self.remove_background_with_baidu_mask(
+                    source_image=rgba,
+                    baidu_foreground=result.foreground,
+                    alpha_seed=result.alpha_seed,
+                )
+                self._last_debug_images['baidu_rebuilt_rgba.png'] = rebuilt
+                return rebuilt
+            logger.warning('ENABLE_BAIDU_MASK_REBUILD=false fallback to baidu foreground')
             return result.foreground.convert('RGBA')
 
         logger.warning('Segmentation backend=legacy-rembg mode=%s', self.backend_mode)
@@ -85,6 +98,37 @@ class SegmentationService:
         else:
             logger.warning('rembg session unavailable, falling back to border-based matting')
         return self._fallback_remove_background(image)
+
+    def remove_background_with_baidu_mask(
+        self,
+        source_image: Image.Image,
+        baidu_foreground: Image.Image,
+        alpha_seed: Image.Image | None,
+    ) -> Image.Image:
+        source_rgba = source_image.convert('RGBA')
+        source_np = np.asarray(source_rgba, dtype=np.uint8)
+        foreground_np = np.asarray(baidu_foreground.convert('RGBA'), dtype=np.uint8)
+        if alpha_seed is not None:
+            alpha_np = np.asarray(alpha_seed.convert('L').resize(source_rgba.size, Image.Resampling.BILINEAR), dtype=np.uint8)
+        else:
+            alpha_np = foreground_np[:, :, 3]
+
+        # RGB 以原图为主，仅在低透明区域借鉴百度前景颜色，避免半透明脏边放大。
+        source_rgb = source_np[:, :, :3].astype(np.float32)
+        fg_rgb = foreground_np[:, :, :3].astype(np.float32)
+        alpha = alpha_np.astype(np.float32) / 255.0
+        edge_mask = (alpha > 0.08) & (alpha < 0.96)
+        composed_rgb = source_rgb.copy()
+        if np.any(edge_mask):
+            blend = np.clip((0.5 - np.abs(alpha - 0.5)) * 1.2, 0.0, 0.35)
+            composed_rgb[edge_mask] = (
+                source_rgb[edge_mask] * (1.0 - blend[edge_mask, None]) + fg_rgb[edge_mask] * blend[edge_mask, None]
+            )
+
+        rebuilt = np.zeros_like(source_np)
+        rebuilt[:, :, :3] = np.clip(composed_rgb, 0, 255).astype(np.uint8)
+        rebuilt[:, :, 3] = alpha_np
+        return Image.fromarray(rebuilt, mode='RGBA')
 
     def _fallback_remove_background(self, image: Image.Image) -> Image.Image:
         rgb = np.asarray(image.convert('RGB')).astype(np.float32)
