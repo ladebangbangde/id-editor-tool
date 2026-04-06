@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from io import BytesIO
 
 import requests
+import numpy as np
 from PIL import Image
 
 from app.core.config import get_settings
@@ -21,6 +22,8 @@ class BaiduSegmentationResult:
     foreground: Image.Image
     labelmap: Image.Image | None = None
     scoremap: Image.Image | None = None
+    alpha_seed: Image.Image | None = None
+    trimap_seed: Image.Image | None = None
 
 
 class BaiduHumanSegmentationService:
@@ -50,6 +53,57 @@ class BaiduHumanSegmentationService:
         buffer = BytesIO()
         image.save(buffer, format='PNG')
         return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+    @staticmethod
+    def _resize_like(image: Image.Image, target_size: tuple[int, int]) -> Image.Image:
+        if image.size == target_size:
+            return image
+        return image.resize(target_size, Image.Resampling.BILINEAR)
+
+    def build_alpha_seed_from_maps(
+        self,
+        labelmap: Image.Image | None,
+        scoremap: Image.Image | None,
+        fallback_alpha: Image.Image | None,
+        target_size: tuple[int, int],
+    ) -> Image.Image:
+        label_np = None
+        score_np = None
+        if labelmap is not None:
+            label_np = np.asarray(self._resize_like(labelmap.convert('L'), target_size), dtype=np.uint8)
+        if scoremap is not None:
+            score_np = np.asarray(self._resize_like(scoremap.convert('L'), target_size), dtype=np.uint8)
+
+        if score_np is not None and np.max(score_np) <= 1:
+            score_np = score_np * 255
+        if score_np is not None and np.max(score_np) <= 100:
+            score_np = np.clip(score_np.astype(np.float32) * 2.55, 0, 255).astype(np.uint8)
+
+        if label_np is None and score_np is None:
+            if fallback_alpha is not None:
+                return self._resize_like(fallback_alpha.convert('L'), target_size)
+            return Image.new('L', target_size, color=255)
+
+        if label_np is None:
+            alpha = score_np.astype(np.float32)
+        elif score_np is None:
+            alpha = (label_np > 0).astype(np.float32) * 255.0
+        else:
+            hard = (label_np > 0).astype(np.float32) * 255.0
+            soft = score_np.astype(np.float32)
+            alpha = 0.70 * soft + 0.30 * hard
+            alpha[label_np == 0] = np.minimum(alpha[label_np == 0], 90.0)
+            alpha[label_np > 0] = np.maximum(alpha[label_np > 0], 130.0)
+
+        alpha = np.clip(alpha, 0, 255).astype(np.uint8)
+        return Image.fromarray(alpha, mode='L')
+
+    def build_trimap_seed_from_alpha(self, alpha_seed: Image.Image) -> Image.Image:
+        alpha = np.asarray(alpha_seed.convert('L'), dtype=np.uint8)
+        trimap = np.full_like(alpha, 128, dtype=np.uint8)
+        trimap[alpha >= 235] = 255
+        trimap[alpha <= 20] = 0
+        return Image.fromarray(trimap, mode='L')
 
     def get_access_token(self) -> str:
         now = time.time()
@@ -174,6 +228,13 @@ class BaiduHumanSegmentationService:
 
         labelmap = self._decode_base64_image(str(labelmap_raw), mode='L') if labelmap_raw else None
         scoremap = self._decode_base64_image(str(scoremap_raw), mode='L') if scoremap_raw else None
+        alpha_seed = self.build_alpha_seed_from_maps(
+            labelmap=labelmap,
+            scoremap=scoremap,
+            fallback_alpha=foreground.getchannel('A'),
+            target_size=foreground.size,
+        )
+        trimap_seed = self.build_trimap_seed_from_alpha(alpha_seed)
 
         logger.info(
             'Baidu segmentation succeeded has_labelmap=%s has_scoremap=%s',
@@ -185,4 +246,6 @@ class BaiduHumanSegmentationService:
             foreground=foreground,
             labelmap=labelmap,
             scoremap=scoremap,
+            alpha_seed=alpha_seed,
+            trimap_seed=trimap_seed,
         )

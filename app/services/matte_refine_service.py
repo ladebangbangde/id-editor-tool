@@ -23,6 +23,8 @@ class MatteRefineResult:
     hair_internal_holes_mask: Image.Image | None = None
     hair_gap_filled_alpha: Image.Image | None = None
     border_residue_mask: Image.Image | None = None
+    face_protected_alpha: Image.Image | None = None
+    final_refined_alpha: Image.Image | None = None
 
 
 class MatteRefineService:
@@ -47,6 +49,32 @@ class MatteRefineService:
     ALPHA_ROI_PADDING = 20
     FOREGROUND_ROI_PADDING = 14
     MIN_ROI_PIXELS_FOR_LOCAL_SOLVE = 120
+    FACE_CORE_ALPHA_MIN = 0.90
+
+    @staticmethod
+    def _face_core_mask(face_box: dict[str, int] | None, shape: tuple[int, int]) -> np.ndarray:
+        h, w = shape
+        if not face_box:
+            return np.zeros((h, w), dtype=bool)
+        x, y, fw, fh = int(face_box.get('x', 0)), int(face_box.get('y', 0)), int(face_box.get('width', 0)), int(face_box.get('height', 0))
+        if fw <= 1 or fh <= 1:
+            return np.zeros((h, w), dtype=bool)
+        yy, xx = np.ogrid[:h, :w]
+        cx = x + fw * 0.5
+        cy = y + fh * 0.5
+        rx = max(1.0, fw * 0.35)
+        ry = max(1.0, fh * 0.40)
+        return (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
+
+    def _protect_face_alpha(self, alpha_refined: np.ndarray, alpha_seed: np.ndarray, face_box: dict[str, int] | None) -> np.ndarray:
+        if not self.settings.enable_face_alpha_protection:
+            return alpha_refined
+        protected = np.clip(alpha_refined.astype(np.float32), 0.0, 1.0)
+        face_core = self._face_core_mask(face_box, protected.shape)
+        if np.any(face_core):
+            seed = np.clip(alpha_seed.astype(np.float32), 0.0, 1.0)
+            protected[face_core] = np.maximum(protected[face_core], np.maximum(seed[face_core], self.FACE_CORE_ALPHA_MIN))
+        return protected
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -342,15 +370,42 @@ class MatteRefineService:
         return out
 
     def refine(self, source_image: Image.Image, rgba_foreground: Image.Image) -> MatteRefineResult:
-        fg_rgba = rgba_foreground.convert('RGBA')
-        rgb = np.asarray(source_image.convert('RGB')).astype(np.float32) / 255.0
-        fg_rgba_np = np.asarray(fg_rgba, dtype=np.uint8)
-        alpha_u8 = np.asarray(fg_rgba.getchannel('A'), dtype=np.uint8)
+        return self.refine_from_alpha_seed(
+            source_image=source_image,
+            alpha_seed=rgba_foreground.getchannel('A'),
+            foreground_hint=rgba_foreground,
+            face_box=None,
+        )
 
-        trimap = self._build_trimap(alpha_u8)
+    def refine_from_alpha_seed(
+        self,
+        source_image: Image.Image,
+        alpha_seed: Image.Image,
+        foreground_hint: Image.Image | None = None,
+        face_box: dict[str, int] | None = None,
+        trimap_seed: Image.Image | None = None,
+    ) -> MatteRefineResult:
+        rgb = np.asarray(source_image.convert('RGB')).astype(np.float32) / 255.0
+        fg_rgba_np = np.asarray(
+            source_image.convert('RGBA') if foreground_hint is None else foreground_hint.convert('RGBA'),
+            dtype=np.uint8,
+        )
+        alpha_u8 = np.asarray(alpha_seed.convert('L').resize(source_image.size, Image.Resampling.BILINEAR), dtype=np.uint8)
+
+        trimap = (
+            np.asarray(trimap_seed.convert('L').resize(source_image.size, Image.Resampling.BILINEAR), dtype=np.float32) / 255.0
+            if trimap_seed is not None
+            else self._build_trimap(alpha_u8)
+        )
         alpha_refined = self._estimate_alpha_cf_roi(rgb, trimap)
         alpha_refined = self._postprocess_alpha(alpha_refined)
         alpha_refined, guided_alpha_debug = self._guided_refine_alpha(source_rgb=rgb, alpha_refined=alpha_refined)
+        alpha_refined = self._protect_face_alpha(
+            alpha_refined=alpha_refined,
+            alpha_seed=alpha_u8.astype(np.float32) / 255.0,
+            face_box=face_box,
+        )
+        face_protected_alpha = (alpha_refined * 255.0).clip(0, 255).astype(np.uint8)
 
         fg_rgb = fg_rgba_np[:, :, :3].astype(np.float32) / 255.0
         border_residue_mask = self._detect_border_background_residue(
@@ -364,6 +419,11 @@ class MatteRefineService:
 
         hair_holes_mask = self._detect_hair_internal_holes(source_rgb=rgb, alpha_refined=alpha_refined_border_cleaned)
         alpha_refined_filled = self._fill_hair_gap_background(alpha_refined=alpha_refined_border_cleaned, hair_holes_mask=hair_holes_mask)
+        alpha_refined_filled = self._protect_face_alpha(
+            alpha_refined=alpha_refined_filled,
+            alpha_seed=alpha_u8.astype(np.float32) / 255.0,
+            face_box=face_box,
+        )
         alpha_filled_u8 = (alpha_refined_filled * 255.0).clip(0, 255).astype(np.uint8)
 
         refined_rgba = fg_rgba_np.copy()
@@ -394,4 +454,6 @@ class MatteRefineService:
             hair_internal_holes_mask=Image.fromarray((hair_holes_mask * 255.0).astype(np.uint8), mode='L'),
             hair_gap_filled_alpha=Image.fromarray(alpha_filled_u8, mode='L'),
             border_residue_mask=Image.fromarray((border_residue_mask * 255.0).astype(np.uint8), mode='L'),
+            face_protected_alpha=Image.fromarray(face_protected_alpha, mode='L'),
+            final_refined_alpha=Image.fromarray(alpha_filled_u8, mode='L'),
         )

@@ -36,6 +36,12 @@ class OutputQualityService:
     EDGE_NOISE_WARN = 0.21
     FEATURE_POLLUTION_FAIL = 0.18
     FEATURE_POLLUTION_WARN = 0.10
+    FACE_BACKGROUND_LEAK_FAIL = 0.055
+    FACE_BACKGROUND_LEAK_WARN = 0.030
+    FOREHEAD_INTRUSION_FAIL = 0.075
+    FOREHEAD_INTRUSION_WARN = 0.045
+    FACIAL_RED_BLUE_INTRUSION_FAIL = 0.24
+    FACIAL_RED_BLUE_INTRUSION_WARN = 0.14
     CLOTH_POLLUTION_FAIL = 0.27
     CLOTH_POLLUTION_WARN = 0.14
     HAIR_GAP_RESIDUE_FAIL = 0.010
@@ -48,6 +54,9 @@ class OutputQualityService:
     ISSUE_PRIORITY = {
         'FACE_COLOR_POLLUTION': 100,
         'FACIAL_FEATURE_CORRUPTED': 95,
+        'FACE_BACKGROUND_LEAK': 94,
+        'FACE_EDGE_COLOR_BLEED': 93,
+        'FOREHEAD_COLOR_INTRUSION': 92,
         'SKIN_TONE_ABNORMAL': 90,
         'FOREGROUND_EDGE_BROKEN': 85,
         'CLOTH_COLOR_POLLUTION': 84,
@@ -60,6 +69,9 @@ class OutputQualityService:
         'SKIN_TONE_ABNORMAL': '肤色表现不够自然，建议更换光线更均匀的照片',
         'FOREGROUND_EDGE_BROKEN': '人物边缘不够自然，建议确认后再使用',
         'FACIAL_FEATURE_CORRUPTED': '五官区域有轻微异常，建议放大检查',
+        'FACE_BACKGROUND_LEAK': '脸部区域存在明显背景侵色，不建议使用',
+        'FACE_EDGE_COLOR_BLEED': '脸部边缘存在明显浸色，不建议用于正式提交',
+        'FOREHEAD_COLOR_INTRUSION': '额头或眼周区域有异常色块，建议重新生成',
         'CLOTH_COLOR_POLLUTION': '衣领或肩部区域有少量底色影响，建议放大查看',
         'HAIR_GAP_BACKGROUND_RESIDUE': '头发局部边缘仍有细小背景残留，建议确认效果',
         'BORDER_BACKGROUND_RESIDUE': '画面边缘有少量背景残留，建议确认后再保存',
@@ -102,7 +114,7 @@ class OutputQualityService:
         h = max(1, min(height - y, int(face_box.get('height', 1))))
         return {'x': x, 'y': y, 'width': w, 'height': h}
 
-    def _face_region_masks(self, face_box: dict[str, int], image_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    def _face_region_masks(self, face_box: dict[str, int], image_shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         h, w = image_shape
         x, y, fw, fh = face_box['x'], face_box['y'], face_box['width'], face_box['height']
         yy, xx = np.ogrid[:h, :w]
@@ -118,7 +130,29 @@ class OutputQualityService:
         fy1 = int(min(h, y + fh * 0.78))
         features = np.zeros((h, w), dtype=bool)
         features[fy0:fy1, fx0:fx1] = True
-        return face_core, features
+        forehead = np.zeros((h, w), dtype=bool)
+        eye_band = np.zeros((h, w), dtype=bool)
+        cheeks = np.zeros((h, w), dtype=bool)
+        fy0 = int(max(0, y + fh * 0.05))
+        fy1 = int(min(h, y + fh * 0.28))
+        ey0 = int(max(0, y + fh * 0.28))
+        ey1 = int(min(h, y + fh * 0.52))
+        if fy1 > fy0:
+            forehead[fy0:fy1, fx0:fx1] = True
+        if ey1 > ey0:
+            eye_band[ey0:ey1, fx0:fx1] = True
+        c0 = int(max(0, y + fh * 0.52))
+        c1 = int(min(h, y + fh * 0.84))
+        l0 = int(max(0, x + fw * 0.12))
+        l1 = int(min(w, x + fw * 0.40))
+        r0 = int(max(0, x + fw * 0.60))
+        r1 = int(min(w, x + fw * 0.88))
+        if c1 > c0:
+            if l1 > l0:
+                cheeks[c0:c1, l0:l1] = True
+            if r1 > r0:
+                cheeks[c0:c1, r0:r1] = True
+        return face_core, features, forehead, eye_band, cheeks
 
     def _cloth_region_mask(self, face_box: dict[str, int], image_shape: tuple[int, int]) -> np.ndarray:
         h, w = image_shape
@@ -164,7 +198,7 @@ class OutputQualityService:
         hair_gap_residue_mask: Image.Image | None = None
 
         if safe_box is not None:
-            face_core, features_mask = self._face_region_masks(safe_box, (h, w))
+            face_core, features_mask, forehead_mask, eye_band_mask, cheek_mask = self._face_region_masks(safe_box, (h, w))
             out_face = out_rgb[face_core]
             src_face = src_rgb[face_core] if src_rgb.shape[:2] == out_rgb.shape[:2] else out_face
             if out_face.size > 0:
@@ -203,6 +237,54 @@ class OutputQualityService:
                         'feature_pollution_ratio': feature_pollution,
                     }
                 )
+
+                if self.settings.enable_face_background_leak_check and bg_color in {'red', 'blue'}:
+                    face_alpha = alpha[face_core] / 255.0
+                    color_pixels = out_rgb.astype(np.float32)
+                    rr = color_pixels[:, :, 0]
+                    gg = color_pixels[:, :, 1]
+                    bb = color_pixels[:, :, 2]
+                    if bg_color == 'red':
+                        intrusion_map = np.clip((rr - np.maximum(gg, bb)) / 255.0, 0.0, 1.0)
+                    else:
+                        intrusion_map = np.clip((bb - np.maximum(rr, gg)) / 255.0, 0.0, 1.0)
+                    leak_mask = face_core & (alpha > 55)
+                    face_background_leak_ratio = float(np.mean((intrusion_map[leak_mask] > 0.24))) if np.any(leak_mask) else 0.0
+                    forehead_intrusion_score = float(np.mean(intrusion_map[forehead_mask])) if np.any(forehead_mask) else 0.0
+                    eye_intrusion_score = float(np.mean(intrusion_map[eye_band_mask])) if np.any(eye_band_mask) else 0.0
+                    cheek_intrusion_score = float(np.mean(intrusion_map[cheek_mask])) if np.any(cheek_mask) else 0.0
+                    facial_red_blue_intrusion = float(
+                        max(
+                            np.mean(intrusion_map[face_core]) if np.any(face_core) else 0.0,
+                            eye_intrusion_score,
+                            cheek_intrusion_score,
+                        )
+                    )
+                    edge_ring = morphology.binary_dilation(face_core, morphology.disk(2)) & (~face_core)
+                    face_edge_bleed = float(np.mean(intrusion_map[edge_ring])) if np.any(edge_ring) else 0.0
+
+                    metrics['face_background_leak_ratio'] = face_background_leak_ratio
+                    metrics['forehead_intrusion_score'] = forehead_intrusion_score
+                    metrics['facial_red_blue_intrusion'] = facial_red_blue_intrusion
+                    metrics['face_edge_bleed_score'] = face_edge_bleed
+                    metrics['eye_band_intrusion_score'] = eye_intrusion_score
+                    metrics['cheek_intrusion_score'] = cheek_intrusion_score
+                    metrics['face_core_alpha_mean'] = float(np.mean(face_alpha)) if face_alpha.size > 0 else 0.0
+
+                    if face_background_leak_ratio >= self.FACE_BACKGROUND_LEAK_FAIL:
+                        reason_codes.append('FACE_BACKGROUND_LEAK')
+                    elif face_background_leak_ratio >= self.FACE_BACKGROUND_LEAK_WARN:
+                        warnings.append('FACE_BACKGROUND_LEAK')
+
+                    if forehead_intrusion_score >= self.FOREHEAD_INTRUSION_FAIL or eye_intrusion_score >= self.FOREHEAD_INTRUSION_FAIL:
+                        reason_codes.append('FOREHEAD_COLOR_INTRUSION')
+                    elif forehead_intrusion_score >= self.FOREHEAD_INTRUSION_WARN or eye_intrusion_score >= self.FOREHEAD_INTRUSION_WARN:
+                        warnings.append('FOREHEAD_COLOR_INTRUSION')
+
+                    if facial_red_blue_intrusion >= self.FACIAL_RED_BLUE_INTRUSION_FAIL or face_edge_bleed >= self.FACIAL_RED_BLUE_INTRUSION_FAIL:
+                        reason_codes.append('FACE_EDGE_COLOR_BLEED')
+                    elif facial_red_blue_intrusion >= self.FACIAL_RED_BLUE_INTRUSION_WARN or face_edge_bleed >= self.FACIAL_RED_BLUE_INTRUSION_WARN:
+                        warnings.append('FACE_EDGE_COLOR_BLEED')
 
                 if pollution >= self.SKIN_RED_BLUE_CAST_FAIL:
                     reason_codes.append('FACE_COLOR_POLLUTION')
