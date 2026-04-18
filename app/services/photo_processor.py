@@ -281,6 +281,49 @@ class PhotoProcessor:
             return 'PASS', '输入与输出质量均通过，可用于正式证件照提交', True
         return 'WARNING', '图片已生成，但仍存在质量风险，不建议直接用于正式证件照提交', False
 
+    @staticmethod
+    def _status_rank(status: str) -> int:
+        return {'PASS': 0, 'WARNING': 1, 'FAIL': 2}.get(status, 1)
+
+    def _pick_best_candidate(self, candidates: list[GenerateCandidate]) -> tuple[GenerateCandidate, dict[str, dict[str, float]]]:
+        if not candidates:
+            raise InvalidArgumentError('未生成可用候选图')
+
+        candidate_scores: dict[str, dict[str, float]] = {}
+        for idx, candidate in enumerate(candidates):
+            metrics = candidate.debugInfo.get('outputQualityMetrics', {}) if candidate.debugInfo else {}
+            face_leak = float(metrics.get('face_background_leak_ratio', 0.0))
+            forehead_intrusion = float(metrics.get('forehead_intrusion_score', 0.0))
+            edge_noise = float(metrics.get('edge_noise_score', 0.0))
+            score = (
+                self._status_rank(candidate.qualityStatus),
+                0 if candidate.safeToSubmit else 1,
+                self._status_rank(candidate.outputQualityStatus),
+                face_leak + forehead_intrusion,
+                edge_noise,
+                idx,
+            )
+            candidate_scores[candidate.candidateId] = {
+                'qualityStatusRank': float(score[0]),
+                'safeToSubmitRank': float(score[1]),
+                'outputQualityStatusRank': float(score[2]),
+                'faceLeakScore': float(score[3]),
+                'edgeNoiseScore': edge_noise,
+            }
+
+        best = min(
+            candidates,
+            key=lambda c: (
+                self._status_rank(c.qualityStatus),
+                0 if c.safeToSubmit else 1,
+                self._status_rank(c.outputQualityStatus),
+                float((c.debugInfo or {}).get('outputQualityMetrics', {}).get('face_background_leak_ratio', 0.0))
+                + float((c.debugInfo or {}).get('outputQualityMetrics', {}).get('forehead_intrusion_score', 0.0)),
+                float((c.debugInfo or {}).get('outputQualityMetrics', {}).get('edge_noise_score', 0.0)),
+            ),
+        )
+        return best, candidate_scores
+
     def _run_candidate_pipeline(
         self,
         *,
@@ -378,6 +421,7 @@ class PhotoProcessor:
                 'engine': engine_key,
                 'outputQualityWarningCodes': selected_quality.warnings,
                 'outputQualityReasonCodes': selected_quality.reason_codes,
+                'outputQualityMetrics': selected_quality.metrics,
             },
         )
         return candidate, candidate_intermediate, selected_quality.metrics, selected_quality.warnings
@@ -542,7 +586,11 @@ class PhotoProcessor:
             else:
                 final_quality_message = '已生成候选图，请选择你更满意的一张保存'
 
-            compatibility_candidate = next((item for item in candidates if item.candidateId == 'baidu'), candidates[0])
+            if self.settings.enable_auto_select_best_candidate:
+                compatibility_candidate, candidate_scores = self._pick_best_candidate(candidates)
+            else:
+                compatibility_candidate = next((item for item in candidates if item.candidateId == 'baidu'), candidates[0])
+                candidate_scores = {}
             secondary_warnings = [
                 warning
                 for warning in detect_result.secondary_warnings
@@ -588,6 +636,19 @@ class PhotoProcessor:
                     'parallelCandidates': [item.candidateId for item in candidates],
                     'candidateMetrics': candidate_metrics,
                     'candidateWarningCodes': candidate_warning_codes,
+                    'selectedCompatibilityCandidate': compatibility_candidate.candidateId,
+                    'candidateScores': candidate_scores,
+                    'candidateFaceLeakMetrics': {
+                        item.candidateId: {
+                            'face_background_leak_ratio': float(
+                                (item.debugInfo or {}).get('outputQualityMetrics', {}).get('face_background_leak_ratio', 0.0)
+                            ),
+                            'forehead_intrusion_score': float(
+                                (item.debugInfo or {}).get('outputQualityMetrics', {}).get('forehead_intrusion_score', 0.0)
+                            ),
+                        }
+                        for item in candidates
+                    },
                 },
                 processStatus='generated',
                 processMessage='已生成两套候选结果，请先选择要保存的图片',

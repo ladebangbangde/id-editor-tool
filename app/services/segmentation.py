@@ -47,6 +47,12 @@ class SegmentationService:
         self._last_debug_images.clear()
         return snapshots
 
+    @staticmethod
+    def rebuild_rgba_from_source_and_alpha(source_image: Image.Image, alpha_seed: Image.Image) -> Image.Image:
+        rebuilt = source_image.convert('RGBA')
+        rebuilt.putalpha(alpha_seed.convert('L'))
+        return rebuilt
+
     def remove_background(self, image: Image.Image) -> Image.Image:
         rgba = image.convert('RGBA')
         self._last_debug_images = {}
@@ -66,7 +72,13 @@ class SegmentationService:
                 self._last_debug_images['baidu_labelmap.png'] = result.labelmap
             if result.scoremap is not None:
                 self._last_debug_images['baidu_scoremap.png'] = result.scoremap
+            if result.alpha_seed is not None:
+                self._last_debug_images['baidu_alpha_seed.png'] = result.alpha_seed
             logger.info('Segmentation backend=baidu success mode=%s', self.backend_mode)
+            if self.settings.enable_baidu_mask_rebuild and result.alpha_seed is not None:
+                rebuilt = self.rebuild_rgba_from_source_and_alpha(source_image=rgba, alpha_seed=result.alpha_seed)
+                self._last_debug_images['baidu_rebuilt_rgba.png'] = rebuilt
+                return rebuilt
             return result.foreground.convert('RGBA')
 
         logger.warning('Segmentation backend=legacy-rembg mode=%s', self.backend_mode)

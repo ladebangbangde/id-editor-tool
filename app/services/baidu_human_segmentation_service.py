@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 
+import numpy as np
 import requests
 from PIL import Image
 
@@ -21,6 +22,7 @@ class BaiduSegmentationResult:
     foreground: Image.Image
     labelmap: Image.Image | None = None
     scoremap: Image.Image | None = None
+    alpha_seed: Image.Image | None = None
 
 
 class BaiduHumanSegmentationService:
@@ -121,6 +123,32 @@ class BaiduHumanSegmentationService:
             return payload['result']
         return payload
 
+    def build_alpha_seed_from_maps(
+        self,
+        labelmap: Image.Image | None,
+        scoremap: Image.Image | None,
+        foreground: Image.Image,
+    ) -> Image.Image:
+        if scoremap is not None:
+            score_alpha = np.asarray(scoremap.convert('L'), dtype=np.float32)
+            # 避免低置信区域过度透明导致脸部“吃穿”。
+            score_alpha = np.clip(score_alpha * 0.86 + 30.0, 0.0, 255.0)
+        else:
+            score_alpha = np.asarray(foreground.convert('RGBA').getchannel('A'), dtype=np.float32)
+
+        if labelmap is not None:
+            label_arr = np.asarray(labelmap.convert('L'), dtype=np.uint8)
+            # 百度 labelmap 常见语义：0 为背景，1 为前景（个别版本会有高值前景，统一按 >0 处理）。
+            fg_mask = label_arr > 0
+            bg_mask = ~fg_mask
+            # 前景区域最低 alpha 兜底，减少额头眼周被侵蚀。
+            score_alpha[fg_mask] = np.maximum(score_alpha[fg_mask], 110.0)
+            # 明确背景区域压低 alpha，降低红蓝底污染。
+            score_alpha[bg_mask] = np.minimum(score_alpha[bg_mask], 22.0)
+
+        alpha_seed = np.clip(score_alpha, 0.0, 255.0).astype(np.uint8)
+        return Image.fromarray(alpha_seed, mode='L')
+
     def segment_human(self, image: Image.Image) -> BaiduSegmentationResult:
         token = self.get_access_token()
         body = {
@@ -174,6 +202,7 @@ class BaiduHumanSegmentationService:
 
         labelmap = self._decode_base64_image(str(labelmap_raw), mode='L') if labelmap_raw else None
         scoremap = self._decode_base64_image(str(scoremap_raw), mode='L') if scoremap_raw else None
+        alpha_seed = self.build_alpha_seed_from_maps(labelmap=labelmap, scoremap=scoremap, foreground=foreground)
 
         logger.info(
             'Baidu segmentation succeeded has_labelmap=%s has_scoremap=%s',
@@ -185,4 +214,5 @@ class BaiduHumanSegmentationService:
             foreground=foreground,
             labelmap=labelmap,
             scoremap=scoremap,
+            alpha_seed=alpha_seed,
         )

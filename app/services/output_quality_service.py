@@ -44,8 +44,14 @@ class OutputQualityService:
     BORDER_RESIDUE_WARN = 0.10
     EDGE_FAST_SKIP_RATIO = 0.0012
     HAIR_FAST_SKIP_BRIGHT_RATIO = 0.0008
+    FACE_BG_LEAK_FAIL = 0.040
+    FACE_BG_LEAK_WARN = 0.022
+    FOREHEAD_INTRUSION_FAIL = 0.030
+    FOREHEAD_INTRUSION_WARN = 0.015
 
     ISSUE_PRIORITY = {
+        'FACE_BACKGROUND_LEAK': 110,
+        'FOREHEAD_COLOR_INTRUSION': 108,
         'FACE_COLOR_POLLUTION': 100,
         'FACIAL_FEATURE_CORRUPTED': 95,
         'SKIN_TONE_ABNORMAL': 90,
@@ -56,6 +62,8 @@ class OutputQualityService:
     }
 
     ISSUE_MESSAGES = {
+        'FACE_BACKGROUND_LEAK': '脸部区域存在明显背景侵色，不建议使用',
+        'FOREHEAD_COLOR_INTRUSION': '额头或眼周区域有异常色块，建议重新生成',
         'FACE_COLOR_POLLUTION': '脸部颜色存在轻微异常，建议确认后再保存',
         'SKIN_TONE_ABNORMAL': '肤色表现不够自然，建议更换光线更均匀的照片',
         'FOREGROUND_EDGE_BROKEN': '人物边缘不够自然，建议确认后再使用',
@@ -119,6 +127,59 @@ class OutputQualityService:
         features = np.zeros((h, w), dtype=bool)
         features[fy0:fy1, fx0:fx1] = True
         return face_core, features
+
+    def _face_leak_metrics(
+        self,
+        out_rgb: np.ndarray,
+        alpha: np.ndarray,
+        face_box: dict[str, int],
+        bg_color: str,
+    ) -> tuple[float, float]:
+        if bg_color not in {'red', 'blue'}:
+            return 0.0, 0.0
+        h, w = out_rgb.shape[:2]
+        x, y, fw, fh = face_box['x'], face_box['y'], face_box['width'], face_box['height']
+        yy, xx = np.ogrid[:h, :w]
+        cx = x + fw * 0.5
+        cy = y + fh * 0.47
+        rx = max(1.0, fw * 0.34)
+        ry = max(1.0, fh * 0.34)
+        face_core = (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
+        core_valid = face_core & (alpha >= 105)
+        if not np.any(core_valid):
+            return 0.0, 0.0
+
+        pixels = out_rgb.astype(np.float32)
+        r = pixels[:, :, 0]
+        g = pixels[:, :, 1]
+        b = pixels[:, :, 2]
+        sat = (np.max(pixels, axis=2) - np.min(pixels, axis=2)) / 255.0
+        if bg_color == 'red':
+            leak_mask = (r - np.maximum(g, b) > 42.0) & (r > 132.0) & (sat > 0.24)
+        else:
+            leak_mask = (b - np.maximum(r, g) > 44.0) & (b > 122.0) & (sat > 0.24)
+        face_background_leak_ratio = float(np.mean(leak_mask[core_valid]))
+
+        forehead_top = int(max(0, y + fh * 0.02))
+        forehead_bottom = int(min(h, y + fh * 0.40))
+        eye_top = int(max(0, y + fh * 0.30))
+        eye_bottom = int(min(h, y + fh * 0.56))
+        left = int(max(0, x + fw * 0.10))
+        right = int(min(w, x + fw * 0.90))
+        forehead_eye_mask = np.zeros((h, w), dtype=bool)
+        if forehead_bottom > forehead_top and right > left:
+            forehead_eye_mask[forehead_top:forehead_bottom, left:right] = True
+        if eye_bottom > eye_top and right > left:
+            forehead_eye_mask[eye_top:eye_bottom, left:right] = True
+        forehead_eye_mask = forehead_eye_mask & (alpha >= 95)
+        if not np.any(forehead_eye_mask):
+            return face_background_leak_ratio, 0.0
+        if bg_color == 'red':
+            intrusion_mask = (r - np.maximum(g, b) > 46.0) & (r > 138.0) & (sat > 0.24)
+        else:
+            intrusion_mask = (b - np.maximum(r, g) > 48.0) & (b > 126.0) & (sat > 0.24)
+        forehead_intrusion_score = float(np.mean(intrusion_mask[forehead_eye_mask]))
+        return face_background_leak_ratio, forehead_intrusion_score
 
     def _cloth_region_mask(self, face_box: dict[str, int], image_shape: tuple[int, int]) -> np.ndarray:
         h, w = image_shape
@@ -218,6 +279,25 @@ class OutputQualityService:
                     reason_codes.append('FACIAL_FEATURE_CORRUPTED')
                 elif feature_pollution >= self.FEATURE_POLLUTION_WARN:
                     warnings.append('FACIAL_FEATURE_CORRUPTED')
+
+                if self.settings.enable_face_background_leak_check:
+                    face_background_leak_ratio, forehead_intrusion_score = self._face_leak_metrics(
+                        out_rgb=out_rgb,
+                        alpha=alpha,
+                        face_box=safe_box,
+                        bg_color=bg_color,
+                    )
+                    metrics['face_background_leak_ratio'] = face_background_leak_ratio
+                    metrics['forehead_intrusion_score'] = forehead_intrusion_score
+                    if face_background_leak_ratio >= self.FACE_BG_LEAK_FAIL:
+                        reason_codes.append('FACE_BACKGROUND_LEAK')
+                    elif face_background_leak_ratio >= self.FACE_BG_LEAK_WARN:
+                        warnings.append('FACE_BACKGROUND_LEAK')
+
+                    if forehead_intrusion_score >= self.FOREHEAD_INTRUSION_FAIL:
+                        reason_codes.append('FOREHEAD_COLOR_INTRUSION')
+                    elif forehead_intrusion_score >= self.FOREHEAD_INTRUSION_WARN:
+                        warnings.append('FOREHEAD_COLOR_INTRUSION')
 
                 if self.settings.enable_cloth_pollution_check and bg_color in {'red', 'blue'}:
                     cloth_mask = self._cloth_region_mask(safe_box, (h, w))

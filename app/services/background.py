@@ -1,6 +1,7 @@
 import numpy as np
 from PIL import Image, ImageFilter
 
+from app.core.config import get_settings
 from app.services.specs import get_background_color
 
 
@@ -13,6 +14,9 @@ class BackgroundService:
     EDGE_TRANSITION_LOW = 0.10
     EDGE_TRANSITION_HIGH = 0.92
     EDGE_BG_RATIO = 0.35
+
+    def __init__(self) -> None:
+        self.settings = get_settings()
 
     def _build_conservative_alpha(self, foreground_rgba: Image.Image) -> Image.Image:
         """
@@ -45,6 +49,8 @@ class BackgroundService:
     def apply(self, foreground_rgba: Image.Image, background_color: str) -> Image.Image:
         color = get_background_color(background_color)
         fg = foreground_rgba.convert('RGBA')
+        if self.settings.enable_safe_edge_background_compose:
+            return self.apply_safe_idphoto_background(fg, background_color)
         return self._legacy_apply(fg, color)
 
     def _legacy_apply(self, foreground_rgba: Image.Image, color: tuple[int, int, int]) -> Image.Image:
@@ -76,3 +82,39 @@ class BackgroundService:
         pure_bg = alpha < self.EDGE_TRANSITION_LOW
         out_rgb[pure_bg] = bg_rgb[pure_bg]
         return Image.fromarray(out_rgb.clip(0, 255).astype(np.uint8), mode='RGB')
+
+    def apply_safe_idphoto_background(self, foreground_rgba: Image.Image, background_color: str) -> Image.Image:
+        color = get_background_color(background_color)
+        fg_np = np.asarray(foreground_rgba.convert('RGBA'), dtype=np.float32)
+        alpha = fg_np[:, :, 3] / 255.0
+        fg_rgb = fg_np[:, :, :3]
+        bg_rgb = np.zeros_like(fg_rgb) + np.array(color, dtype=np.float32)
+
+        # 仅在边缘窄带过渡：高置信前景保留人物、纯背景直接铺底。
+        edge_low = 0.08
+        edge_high = 0.86
+        if background_color.lower() in {'red', 'blue'}:
+            # 红蓝底更保守，避免额头/眼周/发丝反向渗色。
+            edge_low = 0.05
+            edge_high = 0.72
+
+        high_conf = alpha >= edge_high
+        pure_bg = alpha <= edge_low
+        edge_zone = (~high_conf) & (~pure_bg)
+
+        out_rgb = bg_rgb.copy()
+        out_rgb[high_conf] = fg_rgb[high_conf]
+        out_rgb[pure_bg] = bg_rgb[pure_bg]
+        if np.any(edge_zone):
+            t = np.clip((alpha - edge_low) / max(edge_high - edge_low, 1e-5), 0.0, 1.0)
+            if background_color.lower() in {'red', 'blue'}:
+                # 中高 alpha 进一步抬高前景占比，低 alpha 才明显引入背景色。
+                edge_fg_ratio = np.where(alpha >= 0.35, np.maximum(t, 0.90), np.maximum(t * 0.85, alpha * 0.70))
+            else:
+                edge_fg_ratio = np.maximum(t, alpha * 0.62)
+            out_rgb[edge_zone] = (
+                fg_rgb[edge_zone] * edge_fg_ratio[edge_zone, None]
+                + bg_rgb[edge_zone] * (1.0 - edge_fg_ratio[edge_zone, None])
+            )
+
+        return Image.fromarray(np.clip(out_rgb, 0, 255).astype(np.uint8), mode='RGB')
